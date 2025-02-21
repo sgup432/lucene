@@ -268,31 +268,38 @@ public class LRUQueryCache implements QueryCache, Accountable {
     }
   }
 
-  CacheAndCount get(Query key, IndexReader.CacheHelper cacheHelper) {
-    assert key instanceof BoostQuery == false;
-    assert key instanceof ConstantScoreQuery == false;
-    final IndexReader.CacheKey readerKey = cacheHelper.getKey();
-    final LeafCache leafCache = cache.get(readerKey);
-    if (leafCache == null) {
-      onMiss(readerKey, key);
-      return null;
+  @Override
+  public CacheAndCount get(Query key, IndexReader.CacheHelper cacheHelper) {
+    try {
+      readLock.lock();
+      assert key instanceof BoostQuery == false;
+      assert key instanceof ConstantScoreQuery == false;
+      final IndexReader.CacheKey readerKey = cacheHelper.getKey();
+      final LeafCache leafCache = cache.get(readerKey);
+      if (leafCache == null) {
+        onMiss(readerKey, key);
+        return null;
+      }
+      // this get call moves the query to the most-recently-used position
+      final Query singleton = uniqueQueries.get(key);
+      if (singleton == null) {
+        onMiss(readerKey, key);
+        return null;
+      }
+      final CacheAndCount cached = leafCache.get(singleton);
+      if (cached == null) {
+        onMiss(readerKey, singleton);
+      } else {
+        onHit(readerKey, singleton);
+      }
+      return cached;
+    } finally {
+      readLock.unlock();
     }
-    // this get call moves the query to the most-recently-used position
-    final Query singleton = uniqueQueries.get(key);
-    if (singleton == null) {
-      onMiss(readerKey, key);
-      return null;
-    }
-    final CacheAndCount cached = leafCache.get(singleton);
-    if (cached == null) {
-      onMiss(readerKey, singleton);
-    } else {
-      onHit(readerKey, singleton);
-    }
-    return cached;
   }
 
-  private void putIfAbsent(Query query, CacheAndCount cached, IndexReader.CacheHelper cacheHelper) {
+  @Override
+  public void putIfAbsent(Query query, CacheAndCount cached, IndexReader.CacheHelper cacheHelper) {
     assert query instanceof BoostQuery == false;
     assert query instanceof ConstantScoreQuery == false;
     // under a lock to make sure that mostRecentlyUsedQueries and cache remain sync'ed
@@ -389,6 +396,8 @@ public class LRUQueryCache implements QueryCache, Accountable {
     }
   }
 
+
+  @Override
   /** Clear the content of this cache. */
   public void clear() {
     writeLock.lock();
@@ -683,7 +692,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
     }
   }
 
-  private class CachingWrapperWeight extends ConstantScoreWeight {
+  public class CachingWrapperWeight extends ConstantScoreWeight {
 
     private final Weight in;
     private final QueryCachingPolicy policy;
@@ -873,7 +882,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
   }
 
   /** Cache of doc ids with a count. */
-  protected static class CacheAndCount implements Accountable {
+  public static class CacheAndCount implements Accountable {
     protected static final CacheAndCount EMPTY = new CacheAndCount(DocIdSet.EMPTY, 0);
 
     private static final long BASE_RAM_BYTES_USED =

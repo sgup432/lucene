@@ -16,6 +16,8 @@
  */
 package org.apache.lucene.search;
 
+import org.apache.lucene.index.IndexReader;
+
 /**
  * A cache for queries.
  *
@@ -32,4 +34,15 @@ public interface QueryCache {
    * @see Collector#scoreMode()
    */
   Weight doCache(Weight weight, QueryCachingPolicy policy);
+
+  default LRUQueryCache.CacheAndCount get(Query key, IndexReader.CacheHelper cacheHelper) {
+    throw new UnsupportedOperationException();
+  }
+
+  default void putIfAbsent(Query query, LRUQueryCache.CacheAndCount cached, IndexReader.CacheHelper cacheHelper) {
+    throw new UnsupportedOperationException();
+  }
+
+  default void clear() {
+  }
 }
