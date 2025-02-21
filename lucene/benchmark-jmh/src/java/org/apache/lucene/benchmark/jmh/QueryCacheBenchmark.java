@@ -27,17 +27,17 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @State(Scope.Group)
-@Warmup(iterations = 3, time = 3)
-@Measurement(iterations = 3, time = 3)
+@Warmup(iterations = 5, time = 5)
+@Measurement(iterations = 5, time = 5)
 @Fork(
-    value = 3,
+    value = 5,
     jvmArgsAppend = {"-Xmx1g", "-Xms1g", "-XX:+AlwaysPreTouch"})
 public class QueryCacheBenchmark {
 
     private static final int MAX_SIZE = 10000;
-    private static final int MAX_SIZE_IN_BYTES = 10;
+    private static final int MAX_SIZE_IN_BYTES = 1048576;
 
-    private static final int SEGMENTS = 15;
+    private static final int SEGMENTS = 50;
 
     private  Query[] queries;
     private IndexReader.CacheHelper[] cacheHelpers;
