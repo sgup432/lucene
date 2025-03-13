@@ -18,6 +18,8 @@ package org.apache.lucene.search;
 
 import org.apache.lucene.index.IndexReader;
 
+import java.io.Closeable;
+
 /**
  * A cache for queries.
  *

@@ -11,10 +11,12 @@ import org.apache.lucene.util.NamedThreadFactory;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.apache.lucene.util.RoaringDocIdSet;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -24,6 +26,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -37,7 +40,7 @@ import static org.apache.lucene.util.RamUsageEstimator.HASHTABLE_RAM_BYTES_PER_E
 import static org.apache.lucene.util.RamUsageEstimator.LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY;
 import static org.apache.lucene.util.RamUsageEstimator.QUERY_DEFAULT_RAM_BYTES_USED;
 
-public class LRUQueryCacheV2 implements QueryCache, Accountable {
+public class LRUQueryCacheV2 implements QueryCache, Accountable, Closeable {
 
     private final int maxSize;
     private final long maxRamBytesUsed;
@@ -66,7 +69,7 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
 
     private final Set<IndexReader.CacheKey> keysToClean = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
-    //private final ScheduledExecutorService executorService;
+    private final ScheduledExecutorService executorService;
 
     private final int numberOfSegments;
 
@@ -109,13 +112,13 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
         cacheSize = new LongAdder();
         hitCount = new LongAdder();
         missCount = new LongAdder();
-        //executorService = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("query-cache-cleaner"));
-        //executorService.schedule(this::cleanUp, 1, TimeUnit.MINUTES);
+        executorService = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("query-cache-cleaner"));
+        executorService.schedule(this::cleanUp, 1, TimeUnit.MINUTES);
 
         this.numberOfSegments = numberOfSegments;
         this.lruQueryCacheSegment = new LRUQueryCacheSegment[numberOfSegments];
         int maxSizePerSegment = maxSize / this.numberOfSegments;
-        int maxSizeInBytesPerSegment = (int) (maxRamBytesUsed / this.numberOfSegments);
+        long maxSizeInBytesPerSegment = (maxRamBytesUsed / this.numberOfSegments);
         for (int i = 0; i < numberOfSegments; i++) {
             lruQueryCacheSegment[i] = new LRUQueryCacheSegment(maxSizePerSegment, maxSizeInBytesPerSegment);
         }
@@ -123,6 +126,14 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
 
     public LRUQueryCacheV2(int maxSize, long maxRamBytesUsed) {
         this(maxSize, maxRamBytesUsed, new LRUQueryCache.MinSegmentSizePredicate(10000), 10, 16);
+    }
+
+    @Override
+    public void close() throws IOException {
+        for (int i = 0; i < numberOfSegments; i++) {
+            lruQueryCacheSegment[i].close();
+        }
+        this.executorService.close();
     }
 
     // pkg-private for testing
@@ -158,7 +169,7 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
         cacheSize.reset();
     }
 
-    public class LRUQueryCacheSegment {
+    public class LRUQueryCacheSegment implements Closeable {
         private final ReentrantReadWriteLock.ReadLock readLock;
         private final ReentrantReadWriteLock.WriteLock writeLock;
         private final Set<Query> mostRecentlyUsedQueries;
@@ -169,7 +180,7 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
         private final long maxRamBytesUsed;
         private final Map<QueryCacheKey, LRUQueryCache.CacheAndCount> cache;
 
-        LRUQueryCacheSegment(int maxSize, int maxRamBytesUsed) {
+        LRUQueryCacheSegment(int maxSize, long maxRamBytesUsed) {
             ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
             writeLock = lock.writeLock();
             readLock = lock.readLock();
@@ -307,6 +318,20 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
             }
         }
 
+        public void cleanUp(Set<IndexReader.CacheKey> keysToCleanUpSnapshot) {
+            for (Iterator<QueryCacheKey> iterator = cache.keySet().iterator(); iterator.hasNext();) {
+                QueryCacheKey queryCacheKey = iterator.next();
+                IndexReader.CacheKey cacheKey = queryCacheKey.cacheKey;
+                if (keysToCleanUpSnapshot.contains(cacheKey)) {
+                    iterator.remove();
+                }
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            this.clear();
+        }
     }
 
     private class QueryCacheKey implements Accountable {
@@ -345,13 +370,15 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
     }
 
     private synchronized void cleanUp() {
-//        for (Iterator<QueryCacheKey> it = cache2.keySet().iterator(); it.hasNext(); ) {
-//            QueryCacheKey queryCacheKey = it.next();
-//            if (keysToClean.contains(queryCacheKey.cacheKey)) {
-//                it.remove();
-//                keysToClean.remove(queryCacheKey.cacheKey);
-//            }
-//        }
+        Set<IndexReader.CacheKey> keysToCleanUpSnapshot = ConcurrentHashMap.newKeySet();
+        synchronized (keysToClean) {
+            keysToCleanUpSnapshot.addAll(keysToClean);
+            keysToClean.clear();
+        }
+        for (int i = 0; i < this.numberOfSegments; i++) {
+            lruQueryCacheSegment[i].cleanUp(keysToCleanUpSnapshot);
+        }
+        keysToCleanUpSnapshot = null;
     }
 
     // pkg-private for testing
@@ -751,23 +778,9 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable {
 
     /** Remove all cache entries for the given core cache key. */
     public void clearCoreCacheKey(IndexReader.CacheKey coreKey) {
-        keysToClean.add(coreKey);
-//        writeLock.lock();
-//        try {
-//            final LRUQueryCacheV2.LeafCache leafCache = cache.remove(coreKey);
-//            if (leafCache != null) {
-//                ramBytesUsed -= HASHTABLE_RAM_BYTES_PER_ENTRY;
-//                final int numEntries = leafCache.cache.size();
-//                if (numEntries > 0) {
-//                    onDocIdSetEviction(coreKey, numEntries, leafCache.ramBytesUsed);
-//                } else {
-//                    assert numEntries == 0;
-//                    assert leafCache.ramBytesUsed == 0;
-//                }
-//            }
-//        } finally {
-//            writeLock.unlock();
-//        }
+        synchronized (keysToClean) {
+            keysToClean.add(coreKey);
+        }
     }
     /**
      * Expert: callback when a query is added to this cache. Implementing this method is typically

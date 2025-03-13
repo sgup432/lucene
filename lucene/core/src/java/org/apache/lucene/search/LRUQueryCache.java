@@ -20,6 +20,7 @@ import static org.apache.lucene.util.RamUsageEstimator.HASHTABLE_RAM_BYTES_PER_E
 import static org.apache.lucene.util.RamUsageEstimator.LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY;
 import static org.apache.lucene.util.RamUsageEstimator.QUERY_DEFAULT_RAM_BYTES_USED;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
@@ -84,7 +86,7 @@ import org.apache.lucene.util.RoaringDocIdSet;
  * @see QueryCachingPolicy
  * @lucene.experimental
  */
-public class LRUQueryCache implements QueryCache, Accountable {
+public class LRUQueryCache implements QueryCache, Accountable, Closeable {
 
   private final int maxSize;
   private final long maxRamBytesUsed;
@@ -99,7 +101,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
   private final Map<IndexReader.CacheKey, LeafCache> cache;
   private final ReentrantReadWriteLock.ReadLock readLock;
   private final ReentrantReadWriteLock.WriteLock writeLock;
-  private final float skipCacheFactor;
+  private final AtomicReference<Float> skipCacheFactor;
   private final LongAdder hitCount;
   private final LongAdder missCount;
 
@@ -125,11 +127,11 @@ public class LRUQueryCache implements QueryCache, Accountable {
     this.maxSize = maxSize;
     this.maxRamBytesUsed = maxRamBytesUsed;
     this.leavesToCache = leavesToCache;
-    if (skipCacheFactor >= 1 == false) { // NaN >= 1 evaluates false
+    if (skipCacheFactor < 1) { // NaN >= 1 evaluates false
       throw new IllegalArgumentException(
           "skipCacheFactor must be no less than 1, get " + skipCacheFactor);
     }
-    this.skipCacheFactor = skipCacheFactor;
+    this.skipCacheFactor = new AtomicReference<>(skipCacheFactor);
 
     uniqueQueries = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true));
     mostRecentlyUsedQueries = uniqueQueries.keySet();
@@ -152,6 +154,11 @@ public class LRUQueryCache implements QueryCache, Accountable {
    */
   public LRUQueryCache(int maxSize, long maxRamBytesUsed) {
     this(maxSize, maxRamBytesUsed, new MinSegmentSizePredicate(10000), 10);
+  }
+
+  @Override
+  public void close() throws IOException {
+    this.clear();
   }
 
   // pkg-private for testing
@@ -737,14 +744,14 @@ public class LRUQueryCache implements QueryCache, Accountable {
         policy.onUse(getQuery());
       }
 
-      if (in.isCacheable(context) == false) {
+      if (!in.isCacheable(context)) {
         // this segment is not suitable for caching
         return in.scorerSupplier(context);
       }
 
       // Short-circuit: Check whether this segment is eligible for caching
       // before we take a lock because of #get
-      if (shouldCache(context) == false) {
+      if (!shouldCache(context)) {
         return in.scorerSupplier(context);
       }
 
@@ -755,7 +762,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
       }
 
       // If the lock is already busy, prefer using the uncached version than waiting
-      if (readLock.tryLock() == false) {
+      if (!readLock.tryLock()) {
         return in.scorerSupplier(context);
       }
 
@@ -779,7 +786,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
             @Override
             public Scorer get(long leadCost) throws IOException {
               // skip cache operation which would slow query down too much
-              if (cost / skipCacheFactor > leadCost) {
+              if (cost / skipCacheFactor.get() > leadCost) {
                 return supplier.get(leadCost);
               }
 

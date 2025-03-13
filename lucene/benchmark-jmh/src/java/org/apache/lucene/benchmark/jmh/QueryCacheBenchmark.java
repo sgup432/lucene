@@ -90,8 +90,8 @@ public class QueryCacheBenchmark {
 
     @TearDown(Level.Iteration)
     public void tearDown() {
-        queryCache.clear();
-        queryCacheV2.clear();
+        ((LRUQueryCache) queryCache).close();
+        ((LRUQueryCache) queryCacheV2).close();
     }
 
 
