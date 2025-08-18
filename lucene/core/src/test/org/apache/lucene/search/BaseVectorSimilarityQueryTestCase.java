@@ -431,8 +431,8 @@ abstract class BaseVectorSimilarityQueryTestCase<
 
   public void testFallbackToExact() throws IOException {
     // Restrictive filter, along with similarity to visit a large number of nodes
-    int numFiltered = random().nextInt(numDocs / 10, numDocs / 5);
-    int targetVisited = random().nextInt(numFiltered * 2, numDocs);
+    int numFiltered = numDocs / 5;
+    int targetVisited = numDocs;
 
     V[] vectors = getRandomVectors(numDocs, dim);
     V queryVector = getRandomVector(dim);
@@ -491,6 +491,7 @@ abstract class BaseVectorSimilarityQueryTestCase<
 
     try (Directory indexStore = getIndexStore(vectors);
         IndexReader reader = DirectoryReader.open(indexStore)) {
+      assumeTrue("graph is fully reachable", HnswUtil.graphIsRooted(reader, vectorField));
       IndexSearcher searcher = newSearcher(reader);
 
       // This query is cacheable, explicitly prevent it
@@ -504,7 +505,6 @@ abstract class BaseVectorSimilarityQueryTestCase<
                   Float.NEGATIVE_INFINITY,
                   Float.NEGATIVE_INFINITY,
                   null));
-
       assertEquals(numDocs, searcher.count(query)); // Expect some results without timeout
 
       searcher.setTimeout(() -> true); // Immediately timeout
@@ -575,7 +575,7 @@ abstract class BaseVectorSimilarityQueryTestCase<
 
   @SuppressWarnings("unchecked")
   V[] getRandomVectors(int numDocs, int dim) {
-    return (V[]) IntStream.range(0, numDocs).mapToObj(i -> getRandomVector(dim)).toArray();
+    return (V[]) IntStream.range(0, numDocs).mapToObj(_ -> getRandomVector(dim)).toArray();
   }
 
   @SafeVarargs

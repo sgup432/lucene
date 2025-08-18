@@ -63,6 +63,7 @@ import org.apache.lucene.index.CheckIndex.Status.DocValuesStatus;
 import org.apache.lucene.index.PointValues.IntersectVisitor;
 import org.apache.lucene.index.PointValues.Relation;
 import org.apache.lucene.internal.hppc.IntIntHashMap;
+import org.apache.lucene.search.DocAndFloatFeatureBuffer;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.KnnCollector;
@@ -86,6 +87,7 @@ import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.CommandLineUtil;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.IOBooleanSupplier;
+import org.apache.lucene.util.IOFunction;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.LongBitSet;
 import org.apache.lucene.util.NamedThreadFactory;
@@ -1454,6 +1456,7 @@ public final class CheckIndex implements Closeable {
     int computedFieldCount = 0;
 
     PostingsEnum postings = null;
+    PostingsEnum bulkPostings = null;
 
     String lastField = null;
     for (String field : fields) {
@@ -1649,6 +1652,10 @@ public final class CheckIndex implements Closeable {
         sumDocFreq += docFreq;
 
         postings = termsEnum.postings(postings, PostingsEnum.ALL);
+        bulkPostings = termsEnum.postings(bulkPostings, PostingsEnum.ALL);
+        bulkPostings.nextDoc();
+        DocAndFloatFeatureBuffer buffer = new DocAndFloatFeatureBuffer();
+        int bufferIndex = 0;
 
         if (hasFreqs == false) {
           if (termsEnum.totalTermFreq() != termsEnum.docFreq()) {
@@ -1697,6 +1704,31 @@ public final class CheckIndex implements Closeable {
             throw new CheckIndexException(
                 "term " + term + ": doc " + doc + ": freq " + freq + " is out of bounds");
           }
+
+          if (bufferIndex == buffer.size) {
+            bulkPostings.nextPostings(
+                (int) Math.min(Integer.MAX_VALUE, bulkPostings.docID() + 64L), buffer);
+            bufferIndex = 0;
+          }
+          if (bufferIndex >= buffer.size) {
+            throw new CheckIndexException("Doc " + doc + " not found by PostingsEnum#nextPostings");
+          }
+          if (doc != buffer.docs[bufferIndex]) {
+            throw new CheckIndexException(
+                "PostingsEnum#nextPostings returns "
+                    + buffer.docs[bufferIndex]
+                    + " as next doc while PostingsEnum#nextDoc returns "
+                    + doc);
+          }
+          if (freq != buffer.features[bufferIndex]) {
+            throw new CheckIndexException(
+                "PostingsEnum#nextPostings returns "
+                    + buffer.features[bufferIndex]
+                    + " as term freq while PostingsEnum#freq returns "
+                    + freq);
+          }
+          bufferIndex++;
+
           if (hasFreqs == false) {
             // When a field didn't index freq, it must
             // consistently "lie" and pretend that freq was
@@ -2022,11 +2054,22 @@ public final class CheckIndex implements Closeable {
           }
         }
 
-        // Checking score blocks is heavy, we only do it on long postings lists, on every 1024th
-        // term or if slow checks are enabled.
+        // Checking score blocks and doc ID runs is heavy, we only do it on long postings lists, on
+        // every 1024th term or if slow checks are enabled.
         if (level >= Level.MIN_LEVEL_FOR_SLOW_CHECKS
             || docFreq > 1024
             || (status.termCount + status.delTermCount) % 1024 == 0) {
+          postings = termsEnum.postings(postings, PostingsEnum.NONE);
+          checkDocIDRuns(postings);
+          if (hasFreqs) {
+            postings = termsEnum.postings(postings, PostingsEnum.FREQS);
+            checkDocIDRuns(postings);
+          }
+          if (hasPositions) {
+            postings = termsEnum.postings(postings, PostingsEnum.POSITIONS);
+            checkDocIDRuns(postings);
+          }
+
           // First check max scores and block uptos
           // But only if slow checks are enabled since we visit all docs
           if (level >= Level.MIN_LEVEL_FOR_SLOW_CHECKS) {
@@ -2455,6 +2498,31 @@ public final class CheckIndex implements Closeable {
     BytesRef filteredTerm = filteredTerms.next();
     if (filteredTerm != null) {
       throw new CheckIndexException("Expected exhausted TermsEnum, but got " + filteredTerm);
+    }
+  }
+
+  private static void checkDocIDRuns(DocIdSetIterator iterator) throws IOException {
+    int prevDoc = -1;
+    int runEnd = 0;
+    for (int doc = iterator.nextDoc();
+        doc != DocIdSetIterator.NO_MORE_DOCS;
+        doc = iterator.nextDoc()) {
+      if (prevDoc + 1 < runEnd && doc != prevDoc + 1) {
+        throw new CheckIndexException(
+            "Run end is " + runEnd + " but next doc after " + prevDoc + " is " + doc);
+      }
+      int newRunEnd = iterator.docIDRunEnd();
+      if (newRunEnd <= doc) {
+        throw new CheckIndexException("Run end " + newRunEnd + " is <= doc ID " + doc);
+      }
+      if (newRunEnd > runEnd) {
+        runEnd = newRunEnd;
+      }
+      prevDoc = doc;
+    }
+
+    if (runEnd != prevDoc + 1) {
+      throw new CheckIndexException("Run end is " + runEnd + " but last doc is " + prevDoc);
     }
   }
 
@@ -3496,11 +3564,6 @@ public final class CheckIndex implements Closeable {
     return status;
   }
 
-  @FunctionalInterface
-  private interface DocValuesIteratorSupplier {
-    DocValuesIterator get(FieldInfo fi) throws IOException;
-  }
-
   private static void checkDocValueSkipper(FieldInfo fi, DocValuesSkipper skipper)
       throws IOException {
     String fieldName = fi.name;
@@ -3589,13 +3652,13 @@ public final class CheckIndex implements Closeable {
     }
   }
 
-  private static void checkDVIterator(FieldInfo fi, DocValuesIteratorSupplier producer)
-      throws IOException {
+  private static void checkDVIterator(
+      FieldInfo fi, IOFunction<FieldInfo, DocValuesIterator> producer) throws IOException {
     String field = fi.name;
 
     // Check advance
-    DocValuesIterator it1 = producer.get(fi);
-    DocValuesIterator it2 = producer.get(fi);
+    DocValuesIterator it1 = producer.apply(fi);
+    DocValuesIterator it2 = producer.apply(fi);
     int i = 0;
     for (int doc = it1.nextDoc(); ; doc = it1.nextDoc()) {
 
@@ -3642,8 +3705,8 @@ public final class CheckIndex implements Closeable {
     }
 
     // Check advanceExact
-    it1 = producer.get(fi);
-    it2 = producer.get(fi);
+    it1 = producer.apply(fi);
+    it2 = producer.apply(fi);
     i = 0;
     int lastDoc = -1;
     for (int doc = it1.nextDoc(); doc != NO_MORE_DOCS; doc = it1.nextDoc()) {
@@ -4335,6 +4398,7 @@ public final class CheckIndex implements Closeable {
     result.newSegments.commit(result.dir);
   }
 
+  @SuppressWarnings("NonFinalStaticField")
   private static boolean assertsOn;
 
   private static boolean testAsserts() {

@@ -206,7 +206,6 @@ public abstract class PerFieldKnnVectorsFormat extends KnnVectorsFormat {
     public FieldsReader(final SegmentReadState readState) throws IOException {
       this.fieldInfos = readState.fieldInfos;
       // Init each unique format:
-      boolean success = false;
       Map<String, KnnVectorsReader> formats = new HashMap<>();
       try {
         // Read field name -> format name
@@ -233,15 +232,13 @@ public abstract class PerFieldKnnVectorsFormat extends KnnVectorsFormat {
             }
           }
         }
-        success = true;
-      } finally {
-        if (!success) {
-          IOUtils.closeWhileHandlingException(formats.values());
-        }
+      } catch (Throwable t) {
+        IOUtils.closeWhileSuppressingExceptions(t, formats.values());
+        throw t;
       }
     }
 
-    private FieldsReader(final FieldsReader fieldsReader) {
+    private FieldsReader(final FieldsReader fieldsReader) throws IOException {
       this.fieldInfos = fieldsReader.fieldInfos;
       for (FieldInfo fi : this.fieldInfos) {
         if (fi.hasVectorValues() && fieldsReader.fields.containsKey(fi.number)) {
@@ -251,7 +248,7 @@ public abstract class PerFieldKnnVectorsFormat extends KnnVectorsFormat {
     }
 
     @Override
-    public KnnVectorsReader getMergeInstance() {
+    public KnnVectorsReader getMergeInstance() throws IOException {
       return new FieldsReader(this);
     }
 
@@ -333,6 +330,12 @@ public abstract class PerFieldKnnVectorsFormat extends KnnVectorsFormat {
       } else {
         return null;
       }
+    }
+
+    @Override
+    public Map<String, Long> getOffHeapByteSize(FieldInfo fieldInfo) {
+      KnnVectorsReader knnVectorsReader = fields.get(fieldInfo.number);
+      return knnVectorsReader.getOffHeapByteSize(fieldInfo);
     }
 
     @Override

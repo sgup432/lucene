@@ -37,6 +37,7 @@ import org.apache.lucene.store.RateLimitedIndexOutput;
 import org.apache.lucene.store.RateLimiter;
 import org.apache.lucene.util.CollectionUtil;
 import org.apache.lucene.util.InfoStream;
+import org.apache.lucene.util.NamedThreadFactory;
 import org.apache.lucene.util.ThreadInterruptedException;
 
 /**
@@ -87,7 +88,7 @@ public class ConcurrentMergeScheduler extends MergeScheduler {
   private int maxMergeCount = AUTO_DETECT_MERGES_AND_THREADS;
 
   /** How many {@link MergeThread}s have kicked off (this is use to name them). */
-  protected int mergeThreadCount;
+  protected int mergeThreadCounter;
 
   /** Floor for IO write rate limit (we will never go any lower than this) */
   private static final double MIN_MERGE_MB_PER_SEC = 5.0;
@@ -578,7 +579,6 @@ public class ConcurrentMergeScheduler extends MergeScheduler {
         return;
       }
 
-      boolean success = false;
       try {
         // OK to spawn a new merge thread to handle this
         // merge:
@@ -593,12 +593,9 @@ public class ConcurrentMergeScheduler extends MergeScheduler {
 
         newMergeThread.start();
         updateMergeThreads();
-
-        success = true;
-      } finally {
-        if (!success) {
-          mergeSource.onMergeFinished(merge);
-        }
+      } catch (Throwable t) {
+        mergeSource.onMergeFinished(merge);
+        throw t;
       }
     }
   }
@@ -673,7 +670,7 @@ public class ConcurrentMergeScheduler extends MergeScheduler {
       throws IOException {
     final MergeThread thread = new MergeThread(mergeSource, merge);
     thread.setDaemon(true);
-    thread.setName("Lucene Merge Thread #" + mergeThreadCount++);
+    thread.setName("Lucene Merge Thread #" + mergeThreadCounter++);
     return thread;
   }
 
@@ -952,7 +949,13 @@ public class ConcurrentMergeScheduler extends MergeScheduler {
 
     public CachedExecutor() {
       this.executor =
-          new ThreadPoolExecutor(0, 1024, 1L, TimeUnit.MINUTES, new SynchronousQueue<>());
+          new ThreadPoolExecutor(
+              0,
+              1024,
+              1L,
+              TimeUnit.MINUTES,
+              new SynchronousQueue<>(),
+              new NamedThreadFactory("CachedExecutor"));
     }
 
     void shutdown() {

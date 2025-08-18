@@ -149,7 +149,7 @@ public final class SynonymQuery extends Query {
 
   @Override
   public int hashCode() {
-    return 31 * classHash() + Arrays.hashCode(terms);
+    return 31 * classHash() + Arrays.hashCode(terms) + field.hashCode();
   }
 
   @Override
@@ -511,18 +511,11 @@ public final class SynonymQuery extends Query {
             }
 
             PriorityQueue<SubIterator> pq =
-                new PriorityQueue<>(impacts.length) {
-                  @Override
-                  protected boolean lessThan(SubIterator a, SubIterator b) {
-                    if (a.current == null) { // means iteration is finished
-                      return false;
-                    }
-                    if (b.current == null) {
-                      return true;
-                    }
-                    return Long.compareUnsigned(a.current.norm, b.current.norm) < 0;
-                  }
-                };
+                PriorityQueue.usingComparator(
+                    impacts.length,
+                    Comparator.comparing(
+                        it -> it.current,
+                        Comparator.nullsLast((a, b) -> Long.compareUnsigned(a.norm, b.norm))));
             for (List<Impact> impacts : toMerge) {
               pq.add(new SubIterator(impacts.iterator()));
             }

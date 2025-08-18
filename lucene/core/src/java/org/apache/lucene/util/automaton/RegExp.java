@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import org.apache.lucene.internal.hppc.IntArrayList;
 
 /**
  * Regular Expression extension to <code>Automaton</code>.
@@ -422,8 +423,69 @@ public class RegExp {
 
   // -----  Matching flags ( > 0xff <= 0xffff )  ------
 
-  /** Allows case insensitive matching of ASCII characters. */
-  public static final int ASCII_CASE_INSENSITIVE = 0x0100;
+  /**
+   * Allows case-insensitive matching of ASCII characters.
+   *
+   * <p>This flag has been deprecated in favor of {@link #CASE_INSENSITIVE} that supports the full
+   * range of Unicode characters. Usage of this flag now has the same behavior as {@link
+   * #CASE_INSENSITIVE}
+   */
+  @Deprecated public static final int ASCII_CASE_INSENSITIVE = 0x0100;
+
+  /**
+   * Allows case-insensitive matching of most Unicode characters.
+   *
+   * <p>In general the attempt is to reach parity with {@link java.util.regex.Pattern}
+   * Pattern.CASE_INSENSITIVE and Pattern.UNICODE_CASE flags when doing a case-insensitive match. We
+   * support common case folding in addition to simple case folding as defined by the common (C) and
+   * simple (S) mappings in https://www.unicode.org/Public/16.0.0/ucd/CaseFolding.txt. This is in
+   * line with {@link java.util.regex.Pattern} and means characters like those representing the
+   * Greek symbol sigma (Σ, σ, ς) will all match one another despite σ and ς both being lowercase
+   * characters as detailed here: https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt.
+   *
+   * <p>Some Unicode characters are difficult to correctly decode casing. In some cases Java's
+   * String class correctly handles decoding these but Java's {@link java.util.regex.Pattern} class
+   * does not. We make only a best effort to maintaining consistency with {@link
+   * java.util.regex.Pattern} and there may be differences.
+   *
+   * <p>There are three known special classes of these characters:
+   *
+   * <ul>
+   *   <li>1. the set of characters whose casing matches across multiple characters such as the
+   *       Greek sigma character mentioned above (Σ, σ, ς); we support these; notably some of these
+   *       characters fall into the ASCII range and so will behave differently when this flag is
+   *       enabled
+   *   <li>2. the set of characters that are neither in an upper nor lower case stable state and can
+   *       be both uppercased and lowercased from their current code point such as ǅ which when
+   *       uppercased produces Ǆ and when lowercased produces ǆ; we support these
+   *   <li>3. the set of characters that when uppercased produce more than 1 character. For
+   *       performance reasons we ignore characters for now, which is consistent with {@link
+   *       java.util.regex.Pattern}
+   * </ul>
+   *
+   * <p>Sometimes these classes of character will overlap; if a character is in both class 3 and any
+   * other case listed above it is ignored; this is consistent with {@link java.util.regex.Pattern}
+   * and C,S,T mappings in https://www.unicode.org/Public/16.0.0/ucd/CaseFolding.txt. Support for
+   * class 3 is only available with full (F) mappings, which is not supported. For instance: this
+   * character ῼ will match it's lowercase form ῳ but not it's uppercase form: ΩΙ
+   *
+   * <p>Class 3 characters that when uppercased generate multiple characters such as ﬗ (0xFB17)
+   * which when uppercased produces ՄԽ (code points: 0x0544 0x053D) and are therefore ignored;
+   * however, lowercase matching on these values is supported: 0x00DF, 0x0130, 0x0149, 0x01F0,
+   * 0x0390, 0x03B0, 0x0587, 0x1E96-0x1E9A, 0x1F50, 0x1F52, 0x1F54, 0x1F56, 0x1F80-0x1FAF,
+   * 0x1FB2-0x1FB4, 0x1FB6, 0x1FB7, 0x1FBC, 0x1FC2-0x1FC4, 0x1FC6, 0x1FC7, 0x1FCC, 0x1FD2, 0x1FD3,
+   * 0x1FD6, 0x1FD7, 0x1FE2-0x1FE4, 0x1FE6, 0x1FE7, 0x1FF2-0x1FF4, 0x1FF6, 0x1FF7, 0x1FFC,
+   * 0xFB00-0xFB06, 0xFB13-0xFB17
+   */
+  public static final int CASE_INSENSITIVE = 0x0200;
+
+  /**
+   * Similar to {@link #CASE_INSENSITIVE} but for character class ranges.
+   *
+   * <p>This flag allows ranges such as {@code [a-z]} to match {@code A}, but may result in
+   * performance costs during parsing.
+   */
+  public static final int CASE_INSENSITIVE_RANGE = 0x0400;
 
   // -----  Deprecated flags ( > 0xffff )  ------
 
@@ -644,7 +706,7 @@ public class RegExp {
         a = Operations.complement(a, Operations.DEFAULT_DETERMINIZE_WORK_LIMIT);
         break;
       case REGEXP_CHAR:
-        if (check(ASCII_CASE_INSENSITIVE)) {
+        if (check(ASCII_CASE_INSENSITIVE | CASE_INSENSITIVE)) {
           a = Automata.makeCharSet(toCaseInsensitiveChar(c));
         } else {
           a = Automata.makeChar(c);
@@ -663,7 +725,7 @@ public class RegExp {
         a = Automata.makeEmpty();
         break;
       case REGEXP_STRING:
-        if (check(ASCII_CASE_INSENSITIVE)) {
+        if (check(ASCII_CASE_INSENSITIVE | CASE_INSENSITIVE)) {
           a = toCaseInsensitiveString();
         } else {
           a = Automata.makeString(s);
@@ -696,19 +758,61 @@ public class RegExp {
     return a;
   }
 
+  /**
+   * This function handles uses the Unicode spec for generating case-insensitive alternates.
+   *
+   * <p>See the {@link #CASE_INSENSITIVE} flag for details on case folding within the Unicode spec.
+   *
+   * @param codepoint the Character code point to encode as an Automaton
+   * @return the original codepoint and the set of alternates
+   */
   private int[] toCaseInsensitiveChar(int codepoint) {
-    // For now we only work with ASCII characters
-    if (codepoint > 128) {
-      return new int[] {codepoint};
+    IntArrayList list = new IntArrayList();
+    CaseFolding.expand(
+        codepoint,
+        (int variant) -> {
+          list.add(variant);
+        });
+    list.sort();
+    return list.toArray();
+  }
+
+  /**
+   * Expands range to include case-insensitive matches.
+   *
+   * <p>This is expensive: case-insensitive range involves iterating over the range space, adding
+   * alternatives. Jump on the grenade here, contain CPU and memory explosion just to this method
+   * activated by optional flag.
+   */
+  private void expandCaseInsensitiveRange(
+      int start, int end, IntArrayList rangeStarts, IntArrayList rangeEnds) {
+    if (start > end)
+      throw new IllegalArgumentException(
+          "invalid range: from (" + start + ") cannot be > to (" + end + ")");
+
+    // contain the explosion of transitions by using a throwaway state
+    Automaton scratch = new Automaton();
+    int state = scratch.createState();
+
+    // iterate over range, adding codepoint and any alternatives as transitions
+    for (int i = start; i <= end; i++) {
+      CaseFolding.expand(
+          i,
+          (int ch) -> {
+            scratch.addTransition(state, state, ch);
+          });
     }
-    int altCase =
-        Character.isLowerCase(codepoint)
-            ? Character.toUpperCase(codepoint)
-            : Character.toLowerCase(codepoint);
-    if (altCase != codepoint) {
-      return new int[] {codepoint, altCase};
-    } else {
-      return new int[] {codepoint};
+
+    // compress transitions
+    scratch.finishState();
+
+    // add compressed ranges to list
+    Transition transition = new Transition();
+    int numTransitions = scratch.initTransition(state, transition);
+    for (int i = 0; i < numTransitions; i++) {
+      scratch.getNextTransition(transition);
+      rangeStarts.add(transition.min);
+      rangeEnds.add(transition.max);
     }
   }
 
@@ -717,7 +821,7 @@ public class RegExp {
 
     Iterator<Integer> iter = s.codePoints().iterator();
     while (iter.hasNext()) {
-      int points[] = toCaseInsensitiveChar(iter.next());
+      int[] points = toCaseInsensitiveChar(iter.next());
       list.add(Automata.makeCharSet(points));
     }
     return Operations.concatenate(list);
@@ -748,6 +852,19 @@ public class RegExp {
     StringBuilder b = new StringBuilder();
     toStringBuilder(b);
     return b.toString();
+  }
+
+  StringBuilder escapeCharIfNeeded(StringBuilder b, int codePoint) {
+    // From https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html#bs
+    // "It is an error to use a backslash prior to any alphabetic character that does not denote
+    // an escaped
+    // construct;"
+    // Plus, ASCII characters conflict with character classes.
+    // Escape only characters which are NOT in [A-Za-z]
+    if (!((codePoint >= 65 && codePoint <= 90) || (codePoint >= 97 && codePoint <= 122))) {
+      b.append("\\");
+    }
+    return b.appendCodePoint(codePoint);
   }
 
   void toStringBuilder(StringBuilder b) {
@@ -797,10 +914,14 @@ public class RegExp {
         b.append(")");
         break;
       case REGEXP_CHAR:
-        b.append("\\").appendCodePoint(c);
+        escapeCharIfNeeded(b, c);
         break;
       case REGEXP_CHAR_RANGE:
-        b.append("[\\").appendCodePoint(from[0]).append("-\\").appendCodePoint(to[0]).append("]");
+        b.append("[");
+        escapeCharIfNeeded(b, from[0]);
+        b.append("-");
+        escapeCharIfNeeded(b, to[0]);
+        b.append("]");
         break;
       case REGEXP_CHAR_CLASS:
         b.append("[");
@@ -1237,22 +1358,34 @@ public class RegExp {
   }
 
   final RegExp parseCharClasses() throws IllegalArgumentException {
-    ArrayList<Integer> starts = new ArrayList<>();
-    ArrayList<Integer> ends = new ArrayList<>();
+    IntArrayList starts = new IntArrayList();
+    IntArrayList ends = new IntArrayList();
 
     do {
       // look for escape
       if (match('\\')) {
-        expandPreDefined(starts, ends);
+        if (peek("\\ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")) {
+          // special "escape" or invalid escape
+          expandPreDefined(starts, ends);
+        } else {
+          // escaped character, don't parse it
+          int c = next();
+          starts.add(c);
+          ends.add(c);
+        }
       } else {
         // parse a character
         int c = parseCharExp();
 
         if (match('-')) {
-          // range from c-d
-          starts.add(c);
-          ends.add(parseCharExp());
-        } else if (check(ASCII_CASE_INSENSITIVE)) {
+          if (check(CASE_INSENSITIVE_RANGE)) {
+            expandCaseInsensitiveRange(c, parseCharExp(), starts, ends);
+          } else {
+            // simple range from c-d
+            starts.add(c);
+            ends.add(parseCharExp());
+          }
+        } else if (check(ASCII_CASE_INSENSITIVE | CASE_INSENSITIVE)) {
           // single case-insensitive character
           for (int form : toCaseInsensitiveChar(c)) {
             starts.add(form);
@@ -1269,20 +1402,17 @@ public class RegExp {
     // not sure why we bother optimizing nodes, same automaton...
     // definitely saves time vs fixing toString()-based tests.
     if (starts.size() == 1) {
-      if (starts.get(0).intValue() == ends.get(0).intValue()) {
+      if (starts.get(0) == ends.get(0)) {
         return makeChar(flags, starts.get(0));
       } else {
         return makeCharRange(flags, starts.get(0), ends.get(0));
       }
     } else {
-      return makeCharClass(
-          flags,
-          starts.stream().mapToInt(Integer::intValue).toArray(),
-          ends.stream().mapToInt(Integer::intValue).toArray());
+      return makeCharClass(flags, starts.toArray(), ends.toArray());
     }
   }
 
-  void expandPreDefined(List<Integer> starts, List<Integer> ends) {
+  void expandPreDefined(IntArrayList starts, IntArrayList ends) {
     if (peek("\\")) {
       // escape
       starts.add((int) '\\');
@@ -1356,13 +1486,10 @@ public class RegExp {
   final RegExp matchPredefinedCharacterClass() {
     // See https://docs.oracle.com/javase/tutorial/essential/regex/pre_char_classes.html
     if (match('\\') && peek("\\ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")) {
-      var starts = new ArrayList<Integer>();
-      var ends = new ArrayList<Integer>();
+      var starts = new IntArrayList();
+      var ends = new IntArrayList();
       expandPreDefined(starts, ends);
-      return makeCharClass(
-          flags,
-          starts.stream().mapToInt(Integer::intValue).toArray(),
-          ends.stream().mapToInt(Integer::intValue).toArray());
+      return makeCharClass(flags, starts.toArray(), ends.toArray());
     }
 
     return null;
