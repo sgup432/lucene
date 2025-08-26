@@ -404,8 +404,9 @@ public class LRUQueryCacheV2 implements QueryCache, Accountable, Closeable {
         missCount.add(1);
     }
 
-    @Override
+
     /** Clear the content of this cache. */
+    @Override
     public void clear() {
         for (int i = 0; i < this.numberOfSegments; i++) {
             this.lruQueryCacheSegment[i].clear();
