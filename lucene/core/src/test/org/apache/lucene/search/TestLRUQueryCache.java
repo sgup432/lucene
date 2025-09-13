@@ -103,12 +103,14 @@ public class TestLRUQueryCache extends LuceneTestCase {
       };
 
   public void testConcurrency() throws Throwable {
+    int partitions = 4;
     final LRUQueryCache queryCache =
         new LRUQueryCache(
-            1 + random().nextInt(20),
+            1 + random().nextInt(20) * partitions,
             1 + random().nextInt(10000),
             _ -> random().nextBoolean(),
-            Float.POSITIVE_INFINITY);
+            Float.POSITIVE_INFINITY,
+            partitions);
     Directory dir = newDirectory();
     final RandomIndexWriter w = new RandomIndexWriter(random(), dir);
     final SearcherFactory searcherFactory =
@@ -250,8 +252,9 @@ public class TestLRUQueryCache extends LuceneTestCase {
     w.addDocument(doc);
     final DirectoryReader reader = w.getReader();
     final IndexSearcher searcher = newSearcher(reader);
+    int partitions = 4;
     final LRUQueryCache queryCache =
-        new LRUQueryCache(2, 100000, _ -> true, Float.POSITIVE_INFINITY);
+        new LRUQueryCache(2 * partitions, 100000, _ -> true, Float.POSITIVE_INFINITY, partitions);
 
     final Query blue = new TermQuery(new Term("color", "blue"));
     final Query red = new TermQuery(new Term("color", "red"));
@@ -845,9 +848,9 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     final AtomicLong ramBytesUsage = new AtomicLong();
     final AtomicLong cacheSize = new AtomicLong();
-
+    int partitions = 4;
     final LRUQueryCache queryCache =
-        new LRUQueryCache(2, 10000000, _ -> true, 1) {
+        new LRUQueryCache(2 * partitions, 10000000, _ -> true, 1, partitions) {
           @Override
           protected void onHit(Object readerCoreKey, Query query) {
             super.onHit(readerCoreKey, query);
@@ -908,10 +911,16 @@ public class TestLRUQueryCache extends LuceneTestCase {
           }
 
           @Override
-          protected void onClear() {
-            super.onClear();
-            ramBytesUsage.set(0);
-            cacheSize.set(0);
+          LRUQueryCachePartition createNewPartition(int maxSize, long maxSizeInBytes) {
+            return new LRUQueryCachePartition(maxSize, maxSizeInBytes) {
+
+              @Override
+              protected void onClear() {
+                super.onClear();
+                ramBytesUsage.set(0);
+                cacheSize.set(0);
+              }
+            };
           }
         };
 
@@ -1047,13 +1056,13 @@ public class TestLRUQueryCache extends LuceneTestCase {
     bq2.add(mustNot, Occur.MUST_NOT);
 
     assertEquals(Collections.emptySet(), new HashSet<>(queryCache.cachedQueries()));
-    searcher.search(bq.build(), 1);
+    TopDocs topDocs = searcher.search(bq.build(), 1);
     assertEquals(
         new HashSet<>(Arrays.asList(filter, mustNot)), new HashSet<>(queryCache.cachedQueries()));
 
     queryCache.clear();
     assertEquals(Collections.emptySet(), new HashSet<>(queryCache.cachedQueries()));
-    searcher.search(new ConstantScoreQuery(bq.build()), 1);
+    topDocs = searcher.search(new ConstantScoreQuery(bq.build()), 1);
     assertEquals(
         new HashSet<>(Arrays.asList(bq2.build(), must, filter, mustNot)),
         new HashSet<>(queryCache.cachedQueries()));
@@ -1131,10 +1140,14 @@ public class TestLRUQueryCache extends LuceneTestCase {
       maxRamBytesUsed = TestUtil.nextLong(random(), 1, 500000);
       iters = atLeast(2000);
     }
-
+    int partitions = 4;
     final LRUQueryCache queryCache =
         new LRUQueryCache(
-            maxSize, maxRamBytesUsed, _ -> random().nextBoolean(), Float.POSITIVE_INFINITY);
+            maxSize * partitions,
+            maxRamBytesUsed,
+            _ -> random().nextBoolean(),
+            Float.POSITIVE_INFINITY,
+            partitions);
     IndexSearcher uncachedSearcher = null;
     IndexSearcher cachedSearcher = null;
 
@@ -1420,13 +1433,20 @@ public class TestLRUQueryCache extends LuceneTestCase {
     w.addDocument(new Document());
     final DirectoryReader reader = w.getReader();
     final IndexSearcher searcher = newSearcher(reader);
+    int partitions = 4;
     final LRUQueryCache queryCache =
-        new LRUQueryCache(2, 100000, _ -> true, Float.POSITIVE_INFINITY) {
+        new LRUQueryCache(2 * partitions, 100000, _ -> true, Float.POSITIVE_INFINITY, partitions) {
+
           @Override
-          protected void onDocIdSetEviction(
-              Object readerCoreKey, int numEntries, long sumRamBytesUsed) {
-            super.onDocIdSetEviction(readerCoreKey, numEntries, sumRamBytesUsed);
-            assertTrue(numEntries > 0);
+          LRUQueryCachePartition createNewPartition(int maxSize, long maxSizeInBytes) {
+            return new LRUQueryCachePartition(maxSize, maxSizeInBytes) {
+              @Override
+              protected void onDocIdSetEviction(
+                  Object readerCoreKey, int numEntries, long sumRamBytesUsed) {
+                super.onDocIdSetEviction(readerCoreKey, numEntries, sumRamBytesUsed);
+                assertTrue(numEntries > 0);
+              }
+            };
           }
         };
 
