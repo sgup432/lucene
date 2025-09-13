@@ -1056,13 +1056,13 @@ public class TestLRUQueryCache extends LuceneTestCase {
     bq2.add(mustNot, Occur.MUST_NOT);
 
     assertEquals(Collections.emptySet(), new HashSet<>(queryCache.cachedQueries()));
-    TopDocs topDocs = searcher.search(bq.build(), 1);
+    searcher.search(bq.build(), 1);
     assertEquals(
         new HashSet<>(Arrays.asList(filter, mustNot)), new HashSet<>(queryCache.cachedQueries()));
 
     queryCache.clear();
     assertEquals(Collections.emptySet(), new HashSet<>(queryCache.cachedQueries()));
-    topDocs = searcher.search(new ConstantScoreQuery(bq.build()), 1);
+    searcher.search(new ConstantScoreQuery(bq.build()), 1);
     assertEquals(
         new HashSet<>(Arrays.asList(bq2.build(), must, filter, mustNot)),
         new HashSet<>(queryCache.cachedQueries()));

@@ -219,15 +219,20 @@ public class LRUQueryCache implements QueryCache, Accountable {
         Query query, CacheAndCount cached, IndexReader.CacheHelper cacheHelper) {
       assert query instanceof BoostQuery == false;
       assert query instanceof ConstantScoreQuery == false;
-      QueryNode entry;
+      QueryNode entry = new QueryNode(query);
+      ;
       writeLock.lock();
       try {
-        if (queries.get(query) == null) {
-          entry = new QueryNode(query);
-          queries.put(query, entry);
-        } else {
-          entry = queries.get(query);
+        QueryNode entry1 = queries.putIfAbsent(query, entry);
+        if (entry1 != null) {
+          entry = entry1;
         }
+        //        if (queries.get(query) == null) {
+        //          entry = new QueryNode(query);
+        //          queries.put(query, entry);
+        //        } else {
+        //          entry = queries.get(query);
+        //        }
         query = entry.query;
         final IndexReader.CacheKey key = cacheHelper.getKey();
         LeafCache leafCache = cache.get(key);
@@ -452,13 +457,20 @@ public class LRUQueryCache implements QueryCache, Accountable {
 
     private List<Query> evictIfNecessary() {
       assert lruLock.isHeldByCurrentThread();
-      List<Query> evictedQueries = new ArrayList<>();
+      List<Query> evictedQueries = null;
       while (head != null && requiresEviction()) {
         QueryNode entry = head;
         removeEntry(entry);
+
+        if (evictedQueries == null) {
+          // lazily initialize with capacity = 4 to avoid resizing on small evictions
+          evictedQueries = new ArrayList<>(4);
+        }
         evictedQueries.add(entry.query);
       }
-      return evictedQueries;
+
+      // return an empty immutable list instead of null
+      return evictedQueries != null ? evictedQueries : Collections.emptyList();
     }
 
     /** Whether evictions are required. */
@@ -559,10 +571,13 @@ public class LRUQueryCache implements QueryCache, Accountable {
     private List<Query> promote(QueryNode entry) {
       List<Query> evictedQueries;
       if (entry == null) {
-        return new ArrayList<>();
+        return Collections.emptyList();
+      }
+      if (!lruLock.tryLock()) {
+        return Collections.emptyList();
       }
       try {
-        lruLock.lock();
+        // lruLock.lock();
         switch (entry.state) {
           case NEW:
             addToTail(entry);
@@ -787,6 +802,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
     EXISTING,
     DELETED
   }
+
   /**
    * Get the skip cache factor
    *
