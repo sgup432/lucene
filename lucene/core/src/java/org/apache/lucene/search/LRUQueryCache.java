@@ -573,7 +573,7 @@ public class LRUQueryCache implements QueryCache, Accountable {
       if (entry == null) {
         return Collections.emptyList();
       }
-      if (!lruLock.tryLock()) {
+      if (lruLock.tryLock() == false) {
         return Collections.emptyList();
       }
       try {
