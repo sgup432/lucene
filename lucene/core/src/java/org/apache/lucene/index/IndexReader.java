@@ -127,7 +127,8 @@ public abstract sealed class IndexReader implements Closeable permits CompositeR
 
   /** A cache key identifying a resource that is being cached on. */
   public static final class CacheKey {
-    CacheKey() {} // only instantiable by core impls
+    /** Dummy doc */
+    public CacheKey() {} // only instantiable by core impls
   }
 
   /**
