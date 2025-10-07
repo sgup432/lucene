@@ -1411,6 +1411,7 @@ final class PanamaVectorUtilSupport implements VectorUtilSupport {
   }
 
   private static final boolean EXPAND_8_VECTOR_OPTIMIZATION = INT_SPECIES.length() >= 4;
+  private static final VectorSpecies<Long> LONG_SPECIES = LongVector.SPECIES_PREFERRED;
 
   @Override
   public void expand8(int[] arr) {
@@ -1433,5 +1434,219 @@ final class PanamaVectorUtilSupport implements VectorUtilSupport {
         arr[192 + i] = l & 0xFF;
       }
     }
+  }
+
+  //  @Override
+  //  public void add(float[] u, float[] v) {
+  //    int i = 0;
+  //    if (u.length > 2 * FLOAT_SPECIES.length()) {
+  //      i += FLOAT_SPECIES.loopBound(u.length);
+  //      for (int j = 0; j < i; j += FLOAT_SPECIES.length()) {
+  //        FloatVector va = FloatVector.fromArray(FLOAT_SPECIES, u, j);
+  //        FloatVector vb = FloatVector.fromArray(FLOAT_SPECIES, v, j);
+  //        va.add(vb).intoArray(u, j);
+  //      }
+  //    }
+  //    for (; i < u.length; i++) {
+  //      u[i] += v[i];
+  //    }
+  //  }
+  //
+  //
+  //  @Override
+  //  public void bitwiseAnd(long[] a, long[] b, long[] result, int length) {
+  //    int i = 0;
+  //    if (length > 2 * LONG_SPECIES.length()) {
+  //      i += LONG_SPECIES.loopBound(length);
+  //      for (int j = 0; j < i; j += LONG_SPECIES.length()) {
+  //        LongVector va = LongVector.fromArray(LONG_SPECIES, a, j);
+  //        LongVector vb = LongVector.fromArray(LONG_SPECIES, b, j);
+  //        va.and(vb).intoArray(result, j);
+  //      }
+  //    }
+  //    for (; i < length; i++) {
+  //      result[i] = a[i] & b[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public void bitwiseOr(long[] a, long[] b, long[] result, int length) {
+  //    int i = 0;
+  //    if (length > 2 * LONG_SPECIES.length()) {
+  //      i += LONG_SPECIES.loopBound(length);
+  //      for (int j = 0; j < i; j += LONG_SPECIES.length()) {
+  //        LongVector va = LongVector.fromArray(LONG_SPECIES, a, j);
+  //        LongVector vb = LongVector.fromArray(LONG_SPECIES, b, j);
+  //        va.or(vb).intoArray(result, j);
+  //      }
+  //    }
+  //    for (; i < length; i++) {
+  //      result[i] = a[i] | b[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public void bitwiseXor(long[] a, long[] b, long[] result, int length) {
+  //    int i = 0;
+  //    if (length > 2 * LONG_SPECIES.length()) {
+  //      i += LONG_SPECIES.loopBound(length);
+  //      for (int j = 0; j < i; j += LONG_SPECIES.length()) {
+  //        LongVector va = LongVector.fromArray(LONG_SPECIES, a, j);
+  //        LongVector vb = LongVector.fromArray(LONG_SPECIES, b, j);
+  //        va.xor(vb).intoArray(result, j);
+  //      }
+  //    }
+  //    for (; i < length; i++) {
+  //      result[i] = a[i] ^ b[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public long cardinalityCount(long[] bits, int length) {
+  //    long count = 0;
+  //    int i = 0;
+  //    if (length > 2 * LONG_SPECIES.length()) {
+  //      LongVector acc = LongVector.zero(LONG_SPECIES);
+  //      i += LONG_SPECIES.loopBound(length);
+  //      for (int j = 0; j < i; j += LONG_SPECIES.length()) {
+  //        LongVector v = LongVector.fromArray(LONG_SPECIES, bits, j);
+  //        acc = acc.add(v.lanewise(VectorOperators.BIT_COUNT));
+  //      }
+  //      count += acc.reduceLanes(VectorOperators.ADD);
+  //    }
+  //    for (; i < length; i++) {
+  //      count += Long.bitCount(bits[i]);
+  //    }
+  //    return count;
+  //  }
+  //
+  //  @Override
+  //  public long intersectionCount(long[] a, long[] b, int length) {
+  //    long count = 0;
+  //    int i = 0;
+  //    if (length > 2 * LONG_SPECIES.length()) {
+  //      LongVector acc = LongVector.zero(LONG_SPECIES);
+  //      i += LONG_SPECIES.loopBound(length);
+  //      for (int j = 0; j < i; j += LONG_SPECIES.length()) {
+  //        LongVector va = LongVector.fromArray(LONG_SPECIES, a, j);
+  //        LongVector vb = LongVector.fromArray(LONG_SPECIES, b, j);
+  //        acc = acc.add(va.and(vb).lanewise(VectorOperators.BIT_COUNT));
+  //      }
+  //      count += acc.reduceLanes(VectorOperators.ADD);
+  //    }
+  //    for (; i < length; i++) {
+  //      count += Long.bitCount(a[i] & b[i]);
+  //    }
+  //    return count;
+  //  }
+
+  @Override
+  public void unpackInts8(long[] packed, long[] unpacked, int offset, int count) {
+    int i = 0;
+    if (count >= 64) {
+      int limit = LONG_SPECIES.loopBound(count / 8);
+      for (; i < limit; i += LONG_SPECIES.length()) {
+        LongVector v = LongVector.fromArray(LONG_SPECIES, packed, i);
+        v.lanewise(VectorOperators.LSHR, 56).and(0xFFL).intoArray(unpacked, offset + i * 8);
+        v.lanewise(VectorOperators.LSHR, 48)
+            .and(0xFFL)
+            .intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length());
+        v.lanewise(VectorOperators.LSHR, 40)
+            .and(0xFFL)
+            .intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length() * 2);
+        v.lanewise(VectorOperators.LSHR, 32)
+            .and(0xFFL)
+            .intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length() * 3);
+        v.lanewise(VectorOperators.LSHR, 24)
+            .and(0xFFL)
+            .intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length() * 4);
+        v.lanewise(VectorOperators.LSHR, 16)
+            .and(0xFFL)
+            .intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length() * 5);
+        v.lanewise(VectorOperators.LSHR, 8)
+            .and(0xFFL)
+            .intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length() * 6);
+        v.and(0xFFL).intoArray(unpacked, offset + i * 8 + LONG_SPECIES.length() * 7);
+      }
+      i *= 8;
+    }
+    for (; i < count; i += 8) {
+      long l = packed[i / 8];
+      unpacked[offset + i] = (l >>> 56) & 0xFFL;
+      unpacked[offset + i + 1] = (l >>> 48) & 0xFFL;
+      unpacked[offset + i + 2] = (l >>> 40) & 0xFFL;
+      unpacked[offset + i + 3] = (l >>> 32) & 0xFFL;
+      unpacked[offset + i + 4] = (l >>> 24) & 0xFFL;
+      unpacked[offset + i + 5] = (l >>> 16) & 0xFFL;
+      unpacked[offset + i + 6] = (l >>> 8) & 0xFFL;
+      unpacked[offset + i + 7] = l & 0xFFL;
+    }
+  }
+
+  @Override
+  public void unpackInts16(long[] packed, long[] unpacked, int offset, int count) {
+    int i = 0;
+    if (count >= 32) {
+      int limit = LONG_SPECIES.loopBound(count / 4);
+      for (; i < limit; i += LONG_SPECIES.length()) {
+        LongVector v = LongVector.fromArray(LONG_SPECIES, packed, i);
+        v.lanewise(VectorOperators.LSHR, 48).and(0xFFFFL).intoArray(unpacked, offset + i * 4);
+        v.lanewise(VectorOperators.LSHR, 32)
+            .and(0xFFFFL)
+            .intoArray(unpacked, offset + i * 4 + LONG_SPECIES.length());
+        v.lanewise(VectorOperators.LSHR, 16)
+            .and(0xFFFFL)
+            .intoArray(unpacked, offset + i * 4 + LONG_SPECIES.length() * 2);
+        v.and(0xFFFFL).intoArray(unpacked, offset + i * 4 + LONG_SPECIES.length() * 3);
+      }
+      i *= 4;
+    }
+    for (; i < count; i += 4) {
+      long l = packed[i / 4];
+      unpacked[offset + i] = (l >>> 48) & 0xFFFFL;
+      unpacked[offset + i + 1] = (l >>> 32) & 0xFFFFL;
+      unpacked[offset + i + 2] = (l >>> 16) & 0xFFFFL;
+      unpacked[offset + i + 3] = l & 0xFFFFL;
+    }
+  }
+
+  @Override
+  public void unpackInts32(long[] packed, long[] unpacked, int offset, int count) {
+    int i = 0;
+    if (count >= 16) {
+      int limit = LONG_SPECIES.loopBound(count / 2);
+      for (; i < limit; i += LONG_SPECIES.length()) {
+        LongVector v = LongVector.fromArray(LONG_SPECIES, packed, i);
+        v.lanewise(VectorOperators.LSHR, 32).intoArray(unpacked, offset + i * 2);
+        v.and(0xFFFFFFFFL).intoArray(unpacked, offset + i * 2 + LONG_SPECIES.length());
+      }
+      i *= 2;
+    }
+    for (; i < count; i += 2) {
+      long l = packed[i / 2];
+      unpacked[offset + i] = l >>> 32;
+      unpacked[offset + i + 1] = l & 0xFFFFFFFFL;
+    }
+  }
+
+  @Override
+  public boolean arrayEquals(int[] array, int value, int start, int count) {
+    int i = 0;
+    if (count > 2 * INT_SPECIES.length()) {
+      IntVector valueVec = IntVector.broadcast(INT_SPECIES, value);
+      int limit = INT_SPECIES.loopBound(count);
+      for (; i < limit; i += INT_SPECIES.length()) {
+        IntVector v = IntVector.fromArray(INT_SPECIES, array, start + i);
+        if (!v.eq(valueVec).allTrue()) {
+          return false;
+        }
+      }
+    }
+    for (; i < count; i++) {
+      if (array[start + i] != value) {
+        return false;
+      }
+    }
+    return true;
   }
 }

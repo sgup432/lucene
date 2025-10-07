@@ -152,4 +152,32 @@ public interface VectorUtilSupport {
    * beneficial here because the block size is 256.
    */
   void expand8(int[] arr);
+
+  //  // In VectorUtilSupport interface
+  //  void add(float[] u, float[] v);
+  //
+  //  /** Vectorized bitwise AND operation for long arrays */
+  //  void bitwiseAnd(long[] a, long[] b, long[] result, int length);
+  //
+  //  /** Vectorized bitwise OR operation for long arrays */
+  //  void bitwiseOr(long[] a, long[] b, long[] result, int length);
+  //
+  //  /** Vectorized bitwise XOR operation for long arrays */
+  //  void bitwiseXor(long[] a, long[] b, long[] result, int length);
+  //
+  //  /** Vectorized population count across multiple longs */
+  //  long cardinalityCount(long[] bits, int length);
+  //
+  //  /** Vectorized intersection count between two bitsets */
+  //  long intersectionCount(long[] a, long[] b, int length);
+
+  /** Vectorized bit unpacking for compressed integer arrays */
+  void unpackInts8(long[] packed, long[] unpacked, int offset, int count);
+
+  void unpackInts16(long[] packed, long[] unpacked, int offset, int count);
+
+  void unpackInts32(long[] packed, long[] unpacked, int offset, int count);
+
+  /** Vectorized array equality check */
+  boolean arrayEquals(int[] array, int value, int start, int count);
 }

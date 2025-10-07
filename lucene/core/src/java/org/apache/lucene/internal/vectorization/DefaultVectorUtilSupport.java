@@ -37,6 +37,98 @@ final class DefaultVectorUtilSupport implements VectorUtilSupport {
     }
   }
 
+  //  // In DefaultVectorUtilSupport (scalar fallback)
+  //  @Override
+  //  public void add(float[] u, float[] v) {
+  //    for (int i = 0; i < u.length; i++) {
+  //      u[i] += v[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public void bitwiseAnd(long[] a, long[] b, long[] result, int length) {
+  //    for (int i = 0; i < length; i++) {
+  //      result[i] = a[i] & b[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public void bitwiseOr(long[] a, long[] b, long[] result, int length) {
+  //    for (int i = 0; i < length; i++) {
+  //      result[i] = a[i] | b[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public void bitwiseXor(long[] a, long[] b, long[] result, int length) {
+  //    for (int i = 0; i < length; i++) {
+  //      result[i] = a[i] ^ b[i];
+  //    }
+  //  }
+  //
+  //  @Override
+  //  public long cardinalityCount(long[] bits, int length) {
+  //    long count = 0;
+  //    for (int i = 0; i < length; i++) {
+  //      count += Long.bitCount(bits[i]);
+  //    }
+  //    return count;
+  //  }
+  //
+  //  @Override
+  //  public long intersectionCount(long[] a, long[] b, int length) {
+  //    long count = 0;
+  //    for (int i = 0; i < length; i++) {
+  //      count += Long.bitCount(a[i] & b[i]);
+  //    }
+  //    return count;
+  //  }
+
+  @Override
+  public void unpackInts8(long[] packed, long[] unpacked, int offset, int count) {
+    for (int i = 0; i < count; i += 8) {
+      long l = packed[i / 8];
+      unpacked[offset + i] = (l >>> 56) & 0xFFL;
+      unpacked[offset + i + 1] = (l >>> 48) & 0xFFL;
+      unpacked[offset + i + 2] = (l >>> 40) & 0xFFL;
+      unpacked[offset + i + 3] = (l >>> 32) & 0xFFL;
+      unpacked[offset + i + 4] = (l >>> 24) & 0xFFL;
+      unpacked[offset + i + 5] = (l >>> 16) & 0xFFL;
+      unpacked[offset + i + 6] = (l >>> 8) & 0xFFL;
+      unpacked[offset + i + 7] = l & 0xFFL;
+    }
+  }
+
+  @Override
+  public void unpackInts16(long[] packed, long[] unpacked, int offset, int count) {
+    for (int i = 0; i < count; i += 4) {
+      long l = packed[i / 4];
+      unpacked[offset + i] = (l >>> 48) & 0xFFFFL;
+      unpacked[offset + i + 1] = (l >>> 32) & 0xFFFFL;
+      unpacked[offset + i + 2] = (l >>> 16) & 0xFFFFL;
+      unpacked[offset + i + 3] = l & 0xFFFFL;
+    }
+  }
+
+  @Override
+  public void unpackInts32(long[] packed, long[] unpacked, int offset, int count) {
+    for (int i = 0; i < count; i += 2) {
+      long l = packed[i / 2];
+      unpacked[offset + i] = l >>> 32;
+      unpacked[offset + i + 1] = l & 0xFFFFFFFFL;
+    }
+  }
+
+  @Override
+  public boolean arrayEquals(int[] array, int value, int start, int count) {
+    for (int i = 0; i < count; i++) {
+      if (array[start + i] != value) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   @Override
   public float dotProduct(float[] a, float[] b) {
     float res = 0f;

@@ -18,6 +18,7 @@ package org.apache.lucene.codecs.lucene90.compressing;
 
 import java.io.IOException;
 import java.util.Arrays;
+import org.apache.lucene.internal.vectorization.VectorizationProvider;
 import org.apache.lucene.store.DataOutput;
 import org.apache.lucene.store.IndexInput;
 
@@ -29,13 +30,10 @@ class StoredFieldsInts {
   private StoredFieldsInts() {}
 
   static void writeInts(int[] values, int start, int count, DataOutput out) throws IOException {
-    boolean allEqual = true;
-    for (int i = 1; i < count; ++i) {
-      if (values[start + i] != values[start]) {
-        allEqual = false;
-        break;
-      }
-    }
+    boolean allEqual =
+        VectorizationProvider.getInstance()
+            .getVectorUtilSupport()
+            .arrayEquals(values, values[start], start + 1, count - 1);
     if (allEqual) {
       out.writeByte((byte) 0);
       out.writeVInt(values[0]);
@@ -141,17 +139,9 @@ class StoredFieldsInts {
     for (; k < count - BLOCK_SIZE_MINUS_ONE; k += BLOCK_SIZE) {
       final int step = offset + k;
       in.readLongs(values, step, 16);
-      for (int i = 0; i < 16; ++i) {
-        final long l = values[step + i];
-        values[step + i] = (l >>> 56) & 0xFFL;
-        values[step + 16 + i] = (l >>> 48) & 0xFFL;
-        values[step + 32 + i] = (l >>> 40) & 0xFFL;
-        values[step + 48 + i] = (l >>> 32) & 0xFFL;
-        values[step + 64 + i] = (l >>> 24) & 0xFFL;
-        values[step + 80 + i] = (l >>> 16) & 0xFFL;
-        values[step + 96 + i] = (l >>> 8) & 0xFFL;
-        values[step + 112 + i] = l & 0xFFL;
-      }
+      VectorizationProvider.getInstance()
+          .getVectorUtilSupport()
+          .unpackInts8(values, values, step, BLOCK_SIZE);
     }
     for (; k < count; k++) {
       values[offset + k] = Byte.toUnsignedInt(in.readByte());
@@ -164,13 +154,9 @@ class StoredFieldsInts {
     for (; k < count - BLOCK_SIZE_MINUS_ONE; k += BLOCK_SIZE) {
       int step = offset + k;
       in.readLongs(values, step, 32);
-      for (int i = 0; i < 32; ++i) {
-        final long l = values[step + i];
-        values[step + i] = (l >>> 48) & 0xFFFFL;
-        values[step + 32 + i] = (l >>> 32) & 0xFFFFL;
-        values[step + 64 + i] = (l >>> 16) & 0xFFFFL;
-        values[step + 96 + i] = l & 0xFFFFL;
-      }
+      VectorizationProvider.getInstance()
+          .getVectorUtilSupport()
+          .unpackInts16(values, values, step, BLOCK_SIZE);
     }
     for (; k < count; k++) {
       values[offset + k] = Short.toUnsignedInt(in.readShort());
@@ -183,11 +169,9 @@ class StoredFieldsInts {
     for (; k < count - BLOCK_SIZE_MINUS_ONE; k += BLOCK_SIZE) {
       final int step = offset + k;
       in.readLongs(values, step, 64);
-      for (int i = 0; i < 64; ++i) {
-        final long l = values[step + i];
-        values[step + i] = l >>> 32;
-        values[step + 64 + i] = l & 0xFFFFFFFFL;
-      }
+      VectorizationProvider.getInstance()
+          .getVectorUtilSupport()
+          .unpackInts32(values, values, step, BLOCK_SIZE);
     }
     for (; k < count; k++) {
       values[offset + k] = in.readInt();
