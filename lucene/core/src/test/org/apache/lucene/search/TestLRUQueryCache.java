@@ -36,7 +36,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -79,7 +82,6 @@ import org.apache.lucene.util.SuppressForbidden;
 
 public class TestLRUQueryCache extends LuceneTestCase {
 
-
   private static final QueryCachingPolicy ALWAYS_CACHE =
       new QueryCachingPolicy() {
 
@@ -107,8 +109,8 @@ public class TestLRUQueryCache extends LuceneTestCase {
   public void testConcurrency() throws Throwable {
     final LRUQueryCache queryCache =
         new LRUQueryCache(
-            1 + random().nextInt(20),
-            1 + random().nextInt(10000),
+            (1 + random().nextInt(20)) * 16,
+            (1 + random().nextInt(10000)) * 16,
             _ -> random().nextBoolean(),
             Float.POSITIVE_INFINITY);
     Directory dir = newDirectory();
@@ -223,19 +225,18 @@ public class TestLRUQueryCache extends LuceneTestCase {
     for (Thread thread : threads) {
       thread.join();
     }
-
     try {
       if (error.get() != null) {
         throw error.get();
       }
-      // TODO:
-      //queryCache.assertConsistent();
+      queryCache.assertConsistent();
     } finally {
       mgr.close();
       w.close();
       dir.close();
-      // TODO:
-      //queryCache.assertConsistent();
+      queryCache.cleanUp();
+      queryCache.assertConsistent();
+      queryCache.close();
     }
   }
 
@@ -255,9 +256,18 @@ public class TestLRUQueryCache extends LuceneTestCase {
     final DirectoryReader reader = w.getReader();
     final IndexSearcher searcher = newSearcher(reader);
     final int segmentCount = reader.leaves().size();
-    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters = new LRUQueryCache.CacheCleanUpParameters(1000000, 1, new LRUQueryCache.DefaultCleanUpThreadFactory());
+    ScheduledThreadPoolExecutor scheduledThreadPoolExecutor =
+        new ScheduledThreadPoolExecutor(1, new DefaultCleanUpThreadFactory());
+    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters =
+        new LRUQueryCache.CacheCleanUpParameters(1000000, scheduledThreadPoolExecutor);
     final LRUQueryCache queryCache =
-        new LRUQueryCache(segmentCount * 2, 100000, _ -> true, Float.POSITIVE_INFINITY, 1, cacheCleanUpParameters);
+        new LRUQueryCache(
+            segmentCount * 2,
+            100000,
+            _ -> true,
+            Float.POSITIVE_INFINITY,
+            1,
+            cacheCleanUpParameters);
 
     final Query blue = new TermQuery(new Term("color", "blue"));
     final Query red = new TermQuery(new Term("color", "red"));
@@ -356,11 +366,11 @@ public class TestLRUQueryCache extends LuceneTestCase {
     assertEquals(1, queryCache.cachedQueries().size());
 
     queryCache.clearQuery(query2);
-    queryCache.forceEvictionsIfNeeded();
+    queryCache.cleanUp();
 
     assertTrue(queryCache.cachedQueries().isEmpty());
     // TODO:
-    //queryCache.assertConsistent();
+    // queryCache.assertConsistent();
 
     reader.close();
     w.close();
@@ -456,6 +466,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     w.close();
     dir.close();
+    queryCache.close();
   }
 
   /** A query that doesn't match anything */
@@ -572,6 +583,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     w.close();
     dir.close();
+    queryCache.close();
   }
 
   /** DummyQuery with Accountable, pretending to be a memory-eating query */
@@ -621,7 +633,9 @@ public class TestLRUQueryCache extends LuceneTestCase {
     writer.addDocument(new Document());
     var reader = writer.getReader();
     var searcher = new IndexSearcher(reader);
-    var queryCache = new LRUQueryCache(16 * reader.leaves().size(), 10000000, _ -> true, Float.POSITIVE_INFINITY);
+    var queryCache =
+        new LRUQueryCache(
+            16 * reader.leaves().size(), 10000000, _ -> true, Float.POSITIVE_INFINITY);
     searcher.setQueryCache(queryCache);
     searcher.setQueryCachingPolicy(ALWAYS_CACHE);
 
@@ -629,23 +643,23 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     var accountableQuery = new AccountableDummyQuery();
     searcher.count(accountableQuery);
-    System.out.println("accountableQuery :" + accountableQuery.ramBytesUsed());
+    LRUQueryCache.QueryCacheKey queryCacheKey =
+        new LRUQueryCache.QueryCacheKey(reader.getReaderCacheHelper().getKey(), accountableQuery);
     var expectedRamBytesUsed =
         HASHTABLE_RAM_BYTES_PER_ENTRY
-            + LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
-            + accountableQuery.ramBytesUsed()
+            + queryCacheKey.ramBytesUsed()
             + queryCache.getChildResources().iterator().next().ramBytesUsed();
     assertEquals(expectedRamBytesUsed, queryCache.ramBytesUsed());
     queryCache.assertConsistent();
 
     queryCache.clearQuery(accountableQuery);
-    queryCache.forceEvictionsIfNeeded();
+    queryCache.cleanUp();
     assertEquals(0, queryCache.ramBytesUsed());
     queryCache.assertConsistent();
 
     queryCache.clearCoreCacheKey(
         reader.getContext().leaves().get(0).reader().getCoreCacheHelper().getKey());
-    queryCache.forceEvictionsIfNeeded();
+    queryCache.cleanUp();
     assertEquals(0, queryCache.ramBytesUsed());
     queryCache.assertConsistent();
 
@@ -727,13 +741,19 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     w.close();
     dir.close();
+    queryCache.close();
   }
 
   public void testStats() throws IOException, InterruptedException {
     // Do immediate evictions if needed in 1ms for testing
-    // max size definition is now changing as we just don't store the query itself in LRU, but a combination of <CacheKey, Query>
-    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters = new LRUQueryCache.CacheCleanUpParameters(1000000, 1, new LRUQueryCache.DefaultCleanUpThreadFactory());
-    final LRUQueryCache queryCache = new LRUQueryCache(1000, 10000000, _ -> true, 1, 1, cacheCleanUpParameters);
+    // max size definition is now changing as we just don't store the query itself in LRU, but a
+    // combination of <CacheKey, Query>
+    ScheduledThreadPoolExecutor scheduledThreadPoolExecutor =
+        new ScheduledThreadPoolExecutor(1, new DefaultCleanUpThreadFactory());
+    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters =
+        new LRUQueryCache.CacheCleanUpParameters(1000000, scheduledThreadPoolExecutor);
+    final LRUQueryCache queryCache =
+        new LRUQueryCache(1000, 10000000, _ -> true, 1, 1, cacheCleanUpParameters);
 
     Directory dir = newDirectory();
     final RandomIndexWriter w = new RandomIndexWriter(random(), dir);
@@ -756,8 +776,9 @@ public class TestLRUQueryCache extends LuceneTestCase {
     final IndexSearcher searcher = new IndexSearcher(reader);
     final Query query = new TermQuery(new Term("color", "red"));
     final Query query2 = new TermQuery(new Term("color", "blue"));
-    LRUQueryCache.LRUQueryCacheSegment[] lruQueryCacheSegments = queryCache.getLruQueryCacheSegments();
-    lruQueryCacheSegments[0].setMaxSize(segmentCount);
+    LRUQueryCache.LRUQueryCachePartition[] lruQueryCachePartitions =
+        queryCache.getLruQueryCacheSegments();
+    lruQueryCachePartitions[0].setMaxSize(segmentCount);
 
     searcher.setQueryCache(queryCache);
     // first pass, lookups without caching that all miss
@@ -799,7 +820,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     // fourth pass with a different filter which will trigger evictions since the size is 1
     searcher.setQueryCachingPolicy(ALWAYS_CACHE);
     for (int i = 0; i < 10; ++i) {
-        searcher.search(new ConstantScoreQuery(query2), 1);
+      searcher.search(new ConstantScoreQuery(query2), 1);
     }
     assertEquals(40 * segmentCount, queryCache.getTotalCount());
     assertEquals(28 * segmentCount, queryCache.getHitCount());
@@ -811,7 +832,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     // now close, causing evictions due to the closing of segment cores
     reader.close();
     w.close();
-    queryCache.forceEvictionsIfNeeded();
+    queryCache.cleanUp();
     assertEquals(40 * segmentCount, queryCache.getTotalCount());
     assertEquals(28 * segmentCount, queryCache.getHitCount());
     assertEquals(12 * segmentCount, queryCache.getMissCount());
@@ -867,10 +888,12 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     final AtomicLong ramBytesUsage = new AtomicLong();
     final AtomicLong cacheSize = new AtomicLong();
-    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters = new LRUQueryCache.CacheCleanUpParameters(1000000, 1, new LRUQueryCache.DefaultCleanUpThreadFactory());
+    ScheduledThreadPoolExecutor scheduledThreadPoolExecutor =
+        new ScheduledThreadPoolExecutor(1, new DefaultCleanUpThreadFactory());
+    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters =
+        new LRUQueryCache.CacheCleanUpParameters(10000000, scheduledThreadPoolExecutor);
     final LRUQueryCache queryCache =
-        new LRUQueryCache(10000, 10000000, _ -> true, 1, 1, cacheCleanUpParameters
-) {
+        new LRUQueryCache(10000, 10000000, _ -> true, 1, 1, cacheCleanUpParameters) {
           @Override
           protected void onHit(Object readerCoreKey, Query query) {
             super.onHit(readerCoreKey, query);
@@ -937,8 +960,9 @@ public class TestLRUQueryCache extends LuceneTestCase {
             cacheSize.set(0);
           }
         };
-    LRUQueryCache.LRUQueryCacheSegment[] lruQueryCacheSegments = queryCache.getLruQueryCacheSegments();
-    lruQueryCacheSegments[0].setMaxSize(segmentCount1 + segmentCount2);
+    LRUQueryCache.LRUQueryCachePartition[] lruQueryCachePartitions =
+        queryCache.getLruQueryCacheSegments();
+    lruQueryCachePartitions[0].setMaxSize(segmentCount1 + segmentCount2);
     final Query query = new TermQuery(new Term("color", "red"));
     final Query query2 = new TermQuery(new Term("color", "blue"));
     final Query query3 = new TermQuery(new Term("color", "green"));
@@ -978,16 +1002,14 @@ public class TestLRUQueryCache extends LuceneTestCase {
     // check that the recomputed stats are the same as those reported by the cache
 
     // TODO:
-    assertEquals(
-        queryCache.ramBytesUsed(),
-            + ramBytesUsage.longValue());
+    assertEquals(queryCache.ramBytesUsed(), +ramBytesUsage.longValue());
     assertEquals(queryCache.getCacheSize(), cacheSize.longValue());
 
     reader1.close();
     reader2.close();
     w1.close();
     w2.close();
-    queryCache.forceEvictionsIfNeeded();
+    queryCache.cleanUp();
     assertEquals(queryCache.ramBytesUsed(), ramBytesUsage.longValue());
     assertEquals(0, cacheSize.longValue());
 
@@ -1039,6 +1061,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     reader.close();
     dir.close();
+    queryCache.close();
   }
 
   public void testBooleanQueryCachesSubClauses() throws IOException {
@@ -1086,6 +1109,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     reader.close();
     dir.close();
+    queryCache.close();
   }
 
   public void testQuerySizeBytesAreCached() throws IOException {
@@ -1106,14 +1130,15 @@ public class TestLRUQueryCache extends LuceneTestCase {
       sb.append("a".repeat(100));
       String term = sb.toString();
       TermQuery termQuery = new TermQuery(new Term("foo", term));
-      long expectedQueryInBytes =
-          LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY + RamUsageEstimator.sizeOf(termQuery, 32);
+      LRUQueryCache.QueryCacheKey queryCacheKey =
+          new LRUQueryCache.QueryCacheKey(reader.getReaderCacheHelper().getKey(), termQuery);
+      long expectedQueryInBytes = queryCacheKey.ramBytesUsed();
       searcher.search(new ConstantScoreQuery(termQuery), 1);
-      Map<LRUQueryCache.QueryCacheKey, LRUQueryCache.QueryMetadata> map = queryCache.getUniqueQueries();
+      Map<LRUQueryCache.QueryCacheKey, LRUQueryCache.QueryMetadata> map =
+          queryCache.getUniqueQueries();
       assertEquals(1, map.size());
       long actualBytes = map.values().iterator().next().queryRamBytesUsed();
-      assertEquals(
-          expectedQueryInBytes, actualBytes);
+      assertEquals(expectedQueryInBytes, actualBytes);
       reader.close();
       queryCache.close();
     }
@@ -1146,6 +1171,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
       assertEquals(1, queryCache.cachedQueries().size());
       assertTrue(queryCache.ramBytesUsed() >= queryInBytes);
       reader.close();
+      queryCache.close();
     }
   }
 
@@ -1262,6 +1288,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     dir.close();
     queryCache.assertConsistent();
+    queryCache.close();
   }
 
   private static class BadQuery extends Query {
@@ -1334,7 +1361,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
       assertTrue(cause.getCause() instanceof ConcurrentModificationException);
     }
 
-    IOUtils.close(w, reader, dir);
+    IOUtils.close(w, reader, dir, queryCache);
   }
 
   public void testRefuseToCacheTooLargeEntries() throws IOException {
@@ -1359,6 +1386,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     w.close();
     dir.close();
+    queryCache.close();
   }
 
   /**
@@ -1388,8 +1416,9 @@ public class TestLRUQueryCache extends LuceneTestCase {
       try (final IndexReader indexReader = DirectoryReader.open(directory)) {
         final FrequencyCountingPolicy policy = new FrequencyCountingPolicy();
         final IndexSearcher indexSearcher = new IndexSearcher(indexReader);
-        indexSearcher.setQueryCache(
-            new LRUQueryCache(100, 10240, _ -> random().nextBoolean(), Float.POSITIVE_INFINITY));
+        LRUQueryCache queryCache =
+            new LRUQueryCache(100, 10240, _ -> random().nextBoolean(), Float.POSITIVE_INFINITY);
+        indexSearcher.setQueryCache(queryCache);
         indexSearcher.setQueryCachingPolicy(policy);
         final Query foo = new TermQuery(new Term("f", "foo"));
         final Query bar = new TermQuery(new Term("f", "bar"));
@@ -1405,6 +1434,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
         assertEquals(1, policy.frequency(query.build()));
         assertEquals(1, policy.frequency(foo));
         assertEquals(1, policy.frequency(bar));
+        queryCache.close();
       }
     }
   }
@@ -1497,6 +1527,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     searcher.getIndexReader().close();
     dir.close();
+    cache.close();
   }
 
   public void testEvictEmptySegmentCache() throws IOException {
@@ -1505,9 +1536,18 @@ public class TestLRUQueryCache extends LuceneTestCase {
     w.addDocument(new Document());
     final DirectoryReader reader = w.getReader();
     final IndexSearcher searcher = newSearcher(reader);
-    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters = new LRUQueryCache.CacheCleanUpParameters(1000000, 1, new LRUQueryCache.DefaultCleanUpThreadFactory());
+    ScheduledThreadPoolExecutor scheduledThreadPoolExecutor =
+        new ScheduledThreadPoolExecutor(1, new DefaultCleanUpThreadFactory());
+    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters =
+        new LRUQueryCache.CacheCleanUpParameters(1000000, scheduledThreadPoolExecutor);
     final LRUQueryCache queryCache =
-        new LRUQueryCache(2 * reader.leaves().size(), 100000, _ -> true, Float.POSITIVE_INFINITY, 1, cacheCleanUpParameters) {
+        new LRUQueryCache(
+            2 * reader.leaves().size(),
+            100000,
+            _ -> true,
+            Float.POSITIVE_INFINITY,
+            1,
+            cacheCleanUpParameters) {
           @Override
           protected void onDocIdSetEviction(
               Object readerCoreKey, int numEntries, long sumRamBytesUsed) {
@@ -1629,6 +1669,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     w.close();
     dir.close();
+    cache.close();
   }
 
   // A query that returns null from Weight.getCacheHelper
@@ -1701,6 +1742,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     w.close();
     dir.close();
+    cache.close();
   }
 
   private static class DummyQuery2 extends Query {
@@ -1781,6 +1823,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     reader.close();
     w.close();
     dir.close();
+    cache.close();
   }
 
   static class DVCacheQuery extends Query {
@@ -1855,7 +1898,8 @@ public class TestLRUQueryCache extends LuceneTestCase {
     IndexSearcher searcher = new AssertingIndexSearcher(random(), reader);
     searcher.setQueryCachingPolicy(ALWAYS_CACHE);
 
-    LRUQueryCache cache = new LRUQueryCache(16 * reader.leaves().size(), 10000, _ -> true, Float.POSITIVE_INFINITY);
+    LRUQueryCache cache =
+        new LRUQueryCache(16 * reader.leaves().size(), 10000, _ -> true, Float.POSITIVE_INFINITY);
     searcher.setQueryCache(cache);
 
     DVCacheQuery query = new DVCacheQuery("field");
@@ -1954,7 +1998,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
     sm.maybeRefreshBlocking();
     // All docs in the first segment are deleted - we should drop it with the default merge policy.
     sm.release(searcher);
-    queryCache.forceEvictionsIfNeeded();
+    queryCache.cleanUp();
     assertEquals(0, queryCache.getCacheSize());
     assertEquals(1, queryCache.getEvictionCount());
     sm.close();
@@ -2030,6 +2074,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
             });
     t.start();
     t.join();
+    cache.close();
   }
 
   public void testSkipCachingForRangeQuery() throws IOException {
@@ -2080,6 +2125,8 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     reader.close();
     dir.close();
+    partCache.close();
+    allCache.close();
   }
 
   public void testCountDelegation() throws IOException {
@@ -2168,6 +2215,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     reader.close();
     dir.close();
+    allCache.close();
   }
 
   public void testCacheHasFastCount() throws IOException {
@@ -2202,6 +2250,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
       assertEquals(List.of(query), allCache.cachedQueries());
       // Now we *do* have a fast count
       assertEquals(2, weight.count(context));
+      allCache.close();
     }
 
     w.deleteDocuments(new TermQuery(new Term("f", new BytesRef("b"))));
@@ -2220,6 +2269,7 @@ public class TestLRUQueryCache extends LuceneTestCase {
       assertEquals(List.of(query), allCache.cachedQueries());
       // We still don't have a fast count because we have deleted documents
       assertEquals(-1, weight.count(context));
+      allCache.close();
     }
 
     w.close();
@@ -2287,5 +2337,74 @@ public class TestLRUQueryCache extends LuceneTestCase {
 
     reader.close();
     dir.close();
+    cache.close();
+  }
+
+  public void testInvalidation() throws Exception {
+    Directory dir = newDirectory();
+    final RandomIndexWriter w = new RandomIndexWriter(random(), dir);
+
+    Document doc = new Document();
+    StringField f = new StringField("color", "blue", Store.NO);
+    doc.add(f);
+    w.addDocument(doc);
+    final DirectoryReader reader = w.getReader();
+    final IndexSearcher searcher = newSearcher(reader);
+    final int segmentCount = reader.leaves().size();
+    ScheduledThreadPoolExecutor scheduledThreadPoolExecutor =
+        new ScheduledThreadPoolExecutor(1, new DefaultCleanUpThreadFactory());
+    LRUQueryCache.CacheCleanUpParameters cacheCleanUpParameters =
+        new LRUQueryCache.CacheCleanUpParameters(1000000, scheduledThreadPoolExecutor);
+    final LRUQueryCache queryCache =
+        new LRUQueryCache(
+            segmentCount * 2,
+            100000,
+            _ -> true,
+            Float.POSITIVE_INFINITY,
+            1,
+            cacheCleanUpParameters);
+    final Query blue = new TermQuery(new Term("color", "blue"));
+
+    assertEquals(Collections.emptyList(), queryCache.cachedQueries());
+
+    searcher.setQueryCache(queryCache);
+    // the filter is not cached on any segment: no changes
+    searcher.setQueryCachingPolicy(ALWAYS_CACHE);
+    searcher.search(new ConstantScoreQuery(blue), 1);
+    assertEquals(1, queryCache.cachedQueries().size());
+
+    queryCache.clearQuery(blue);
+    queryCache.clearCoreCacheKey(
+        reader.getContext().leaves().get(0).reader().getCoreCacheHelper().getKey());
+    queryCache.cleanUp();
+    assertEquals(0, queryCache.getCacheSize());
+    assertEquals(0, queryCache.ramBytesUsed());
+
+    reader.close();
+    w.close();
+    dir.close();
+    queryCache.close();
+  }
+
+  public static class DefaultCleanUpThreadFactory implements ThreadFactory {
+    private final String namePrefix;
+
+    public DefaultCleanUpThreadFactory() {
+      this.namePrefix = "query-cache-cleanup-" + UUID.randomUUID();
+    }
+
+    @Override
+    public Thread newThread(Runnable r) {
+      Thread thread = new Thread(r, namePrefix);
+      thread.setDaemon(true);
+      thread.setPriority(Thread.NORM_PRIORITY);
+      thread.setUncaughtExceptionHandler(
+          (t, e) -> {
+            System.err.println(
+                "Uncaught exception in thread " + t.getName() + ": " + e.getMessage());
+            e.printStackTrace();
+          });
+      return thread;
+    }
   }
 }
