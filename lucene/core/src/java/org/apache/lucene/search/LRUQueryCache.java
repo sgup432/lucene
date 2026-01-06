@@ -100,8 +100,6 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
   private volatile float skipCacheFactor;
   private final LongAdder hitCount;
   private final LongAdder missCount;
-  private final LongAdder cacheCount = new LongAdder();
-  private final LongAdder cacheSize = new LongAdder();
   private final int numberOfPartitions;
   private final LRUQueryCachePartition[] lruQueryCachePartition;
 
@@ -178,7 +176,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
     }
   }
 
-  LRUQueryCachePartition[] getLruQueryCacheSegments() {
+  public LRUQueryCachePartition[] getLruQueryCacheSegments() {
     return this.lruQueryCachePartition;
   }
 
@@ -322,7 +320,6 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
    * @lucene.experimental
    */
   protected void onClear() {
-    cacheSize.reset();
   }
 
   public CacheAndCount get(Query key, IndexReader.CacheHelper cacheHelper) {
@@ -346,6 +343,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
 
   /** Remove all cache entries for the given core cache key. */
   public void clearCoreCacheKey(IndexReader.CacheKey coreKey) {
+    this.registeredClosedListeners.remove(coreKey);
     synchronized (keysToClean) {
       keysToClean.add(coreKey);
     }
@@ -409,10 +407,10 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
         for (CacheAndCount cached : this.lruQueryCachePartition[i].cache.values()) {
           recomputedRamBytesUsed += cached.ramBytesUsed();
         }
-        if (recomputedRamBytesUsed != this.lruQueryCachePartition[i].ramBytesUsed.longValue()) {
+        if (recomputedRamBytesUsed != this.lruQueryCachePartition[i].ramBytesUsed) {
           throw new AssertionError(
               "ramBytesUsed mismatch : "
-                  + this.lruQueryCachePartition[i].ramBytesUsed.longValue()
+                  + this.lruQueryCachePartition[i].ramBytesUsed
                   + " != "
                   + recomputedRamBytesUsed
                   + " for partition: "
@@ -457,7 +455,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
   public long ramBytesUsed() {
     long ramBytesUsed = 0;
     for (int i = 0; i < this.numberOfPartitions; i++) {
-      ramBytesUsed += this.lruQueryCachePartition[i].ramBytesUsed.longValue();
+      ramBytesUsed += this.lruQueryCachePartition[i].ramBytesUsed;
     }
     return ramBytesUsed;
   }
@@ -599,7 +597,11 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
    * @see #getEvictionCount()
    */
   public final long getCacheSize() {
-    return cacheSize.longValue();
+    long cacheSize = 0;
+    for (int i = 0; i < this.numberOfPartitions; i++) {
+      cacheSize += this.lruQueryCachePartition[i].cacheSize;
+    }
+    return cacheSize;
   }
 
   /**
@@ -612,7 +614,11 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
    * @see #getEvictionCount()
    */
   public final long getCacheCount() {
-    return cacheCount.longValue();
+    long cacheCount = 0;
+    for (int i = 0; i < this.numberOfPartitions; i++) {
+      cacheCount += this.lruQueryCachePartition[i].cacheCount;
+    }
+    return cacheCount;
   }
 
   /**
@@ -794,14 +800,16 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
     }
   }
 
-  class LRUQueryCachePartition {
+  public class LRUQueryCachePartition {
     private final ReentrantReadWriteLock.ReadLock readLock;
     private final ReentrantReadWriteLock.WriteLock writeLock;
-    private final Set<QueryCacheKey> mostRecentlyUsedCacheKeys;
+    public final Set<QueryCacheKey> mostRecentlyUsedCacheKeys;
     private final Map<QueryCacheKey, QueryMetadata> uniqueCacheKeys;
     private int maxSize;
     private final long maxRamBytesUsed;
-    protected final LongAdder ramBytesUsed;
+    protected volatile long ramBytesUsed;
+    private volatile long cacheCount;
+    private volatile long cacheSize;
     private final Map<QueryCacheKey, LRUQueryCache.CacheAndCount> cache;
 
     LRUQueryCachePartition(int maxSize, long maxRamBytesUsed) {
@@ -812,8 +820,8 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
       mostRecentlyUsedCacheKeys = uniqueCacheKeys.keySet();
       this.maxSize = maxSize;
       this.maxRamBytesUsed = maxRamBytesUsed;
-      cache = new ConcurrentHashMap<>();
-      this.ramBytesUsed = new LongAdder();
+      cache = new HashMap<>();
+      this.ramBytesUsed = 0;
     }
 
     void setMaxSize(int maxSize) {
@@ -829,7 +837,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
     }
 
     protected void onQueryCache(QueryCacheKey queryCacheKey, long ramBytesUsed) {
-      this.ramBytesUsed.add(ramBytesUsed);
+      this.ramBytesUsed += ramBytesUsed;
       LRUQueryCache.this.onQueryCache(queryCacheKey.query, ramBytesUsed);
     }
 
@@ -840,7 +848,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
      * @lucene.experimental
      */
     protected void onQueryEviction(QueryCacheKey queryCacheKey, long ramBytesUsed) {
-      this.ramBytesUsed.add(-ramBytesUsed);
+      this.ramBytesUsed -= ramBytesUsed;
       LRUQueryCache.this.onQueryEviction(queryCacheKey.query, ramBytesUsed);
     }
 
@@ -852,9 +860,9 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
      * @lucene.experimental
      */
     protected void onDocIdSetCache(Object readerCoreKey, long ramBytesUsed) {
-      cacheSize.add(1);
-      cacheCount.add(1);
-      this.ramBytesUsed.add(ramBytesUsed);
+      cacheSize += 1;
+      cacheCount += 1;
+      this.ramBytesUsed += ramBytesUsed;
       LRUQueryCache.this.onDocIdSetCache(readerCoreKey, ramBytesUsed);
     }
 
@@ -865,8 +873,8 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
      * @lucene.experimental
      */
     protected void onDocIdSetEviction(Object readerCoreKey, int numEntries, long sumRamBytesUsed) {
-      this.ramBytesUsed.add(-sumRamBytesUsed);
-      cacheSize.add(-numEntries);
+      this.ramBytesUsed -= sumRamBytesUsed;
+      cacheSize -= numEntries;
       LRUQueryCache.this.onDocIdSetEviction(readerCoreKey, numEntries, sumRamBytesUsed);
     }
 
@@ -905,31 +913,38 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
       // under a lock to make sure that mostRecentlyUsedQueries and cache remain sync'ed
       writeLock.lock();
       try {
-        uniqueCacheKeys.computeIfAbsent(
-            queryCacheKey,
-            q -> {
-              long queryRamBytesUsed = q.ramBytesUsed();
-              onQueryCache(q, queryRamBytesUsed);
-              return new QueryMetadata(q.query, queryRamBytesUsed);
-            });
+//        uniqueCacheKeys.computeIfAbsent(
+//            queryCacheKey,
+//            q -> {
+//              long queryRamBytesUsed = q.ramBytesUsed();
+//              onQueryCache(q, queryRamBytesUsed);
+//              return new QueryMetadata(q.query, queryRamBytesUsed);
+//            });
+        QueryMetadata metadata = uniqueCacheKeys.get(queryCacheKey);
+        if (metadata == null) {
+          long ramBytes = queryCacheKey.ramBytesUsed();
+          onQueryCache(queryCacheKey, ramBytes);
+          metadata = new QueryMetadata(queryCacheKey.query, ramBytes);
+          uniqueCacheKeys.put(queryCacheKey, metadata);
+        }
         if (cache.putIfAbsent(queryCacheKey, cached) == null) {
           onDocIdSetCache(
               cacheHelper.getKey(), HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ramBytesUsed());
-        }
-
-        if (registeredClosedListeners.putIfAbsent(cacheHelper.getKey(), Boolean.TRUE) == null) {
-          // we just created a new leaf cache, need to register a close listener
-          cacheHelper.addClosedListener(LRUQueryCache.this::clearCoreCacheKey);
         }
         evictIfNecessary();
       } finally {
         writeLock.unlock();
       }
+      if (registeredClosedListeners.putIfAbsent(cacheHelper.getKey(), Boolean.TRUE) == null) {
+        // we just created a new leaf cache, need to register a close listener
+        cacheHelper.addClosedListener(LRUQueryCache.this::clearCoreCacheKey);
+      }
     }
 
     protected void onClear() {
       assert writeLock.isHeldByCurrentThread();
-      this.ramBytesUsed.reset();
+      this.ramBytesUsed = 0;
+      this.cacheSize = 0;
     }
 
     void remove(QueryCacheKey queryCacheKey) {
@@ -978,7 +993,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
       if (size == 0) {
         return false;
       } else {
-        return size > maxSize || this.ramBytesUsed.longValue() > maxRamBytesUsed;
+        return size > maxSize || this.ramBytesUsed > maxRamBytesUsed;
       }
     }
 
