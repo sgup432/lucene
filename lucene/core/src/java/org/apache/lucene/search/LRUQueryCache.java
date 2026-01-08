@@ -319,8 +319,7 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
    *
    * @lucene.experimental
    */
-  protected void onClear() {
-  }
+  protected void onClear() {}
 
   public CacheAndCount get(Query key, IndexReader.CacheHelper cacheHelper) {
     assert key instanceof BoostQuery == false;
@@ -910,32 +909,32 @@ public class LRUQueryCache implements QueryCache, Accountable, Closeable {
         LRUQueryCache.CacheAndCount cached) {
       assert query instanceof BoostQuery == false;
       assert query instanceof ConstantScoreQuery == false;
-      // under a lock to make sure that mostRecentlyUsedQueries and cache remain sync'ed
+
+      // Pre-calculate values outside lock
+      long ramBytes = queryCacheKey.ramBytesUsed();
+      IndexReader.CacheKey cacheKey = cacheHelper.getKey();
+      long cachedValueBytesUsed = HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ramBytesUsed();
+
       writeLock.lock();
       try {
-//        uniqueCacheKeys.computeIfAbsent(
-//            queryCacheKey,
-//            q -> {
-//              long queryRamBytesUsed = q.ramBytesUsed();
-//              onQueryCache(q, queryRamBytesUsed);
-//              return new QueryMetadata(q.query, queryRamBytesUsed);
-//            });
-        QueryMetadata metadata = uniqueCacheKeys.get(queryCacheKey);
-        if (metadata == null) {
-          long ramBytes = queryCacheKey.ramBytesUsed();
-          onQueryCache(queryCacheKey, ramBytes);
-          metadata = new QueryMetadata(queryCacheKey.query, ramBytes);
-          uniqueCacheKeys.put(queryCacheKey, metadata);
+        // Use putIfAbsent return value to determine if insertion actually happened
+        LRUQueryCache.CacheAndCount existing = cache.putIfAbsent(queryCacheKey, cached);
+        if (existing != null) {
+          // Entry already exists, no work needed
+          return;
         }
-        if (cache.putIfAbsent(queryCacheKey, cached) == null) {
-          onDocIdSetCache(
-              cacheHelper.getKey(), HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ramBytesUsed());
-        }
+
+        // Only execute side effects when insertion actually occurred
+        QueryMetadata metadata = new QueryMetadata(queryCacheKey.query, ramBytes);
+        uniqueCacheKeys.putIfAbsent(queryCacheKey, metadata);
+        onQueryCache(queryCacheKey, ramBytes);
+        onDocIdSetCache(cacheKey, cachedValueBytesUsed);
         evictIfNecessary();
       } finally {
         writeLock.unlock();
       }
-      if (registeredClosedListeners.putIfAbsent(cacheHelper.getKey(), Boolean.TRUE) == null) {
+
+      if (registeredClosedListeners.putIfAbsent(cacheKey, Boolean.TRUE) == null) {
         // we just created a new leaf cache, need to register a close listener
         cacheHelper.addClosedListener(LRUQueryCache.this::clearCoreCacheKey);
       }
