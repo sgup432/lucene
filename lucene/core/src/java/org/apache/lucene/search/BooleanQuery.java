@@ -426,67 +426,15 @@ public class BooleanQuery extends Query implements Iterable<BooleanClause> {
     }
 
     // Deduplicate SHOULD clauses by summing up their boosts
-    if (clauseSets.get(Occur.SHOULD).size() > 0 && minimumNumberShouldMatch <= 1) {
-      Map<Query, Double> shouldClauses = new HashMap<>();
-      for (Query query : clauseSets.get(Occur.SHOULD)) {
-        double boost = 1;
-        while (query instanceof BoostQuery) {
-          BoostQuery bq = (BoostQuery) query;
-          boost *= bq.getBoost();
-          query = bq.getQuery();
-        }
-        shouldClauses.put(query, shouldClauses.getOrDefault(query, 0d) + boost);
-      }
-      if (shouldClauses.size() != clauseSets.get(Occur.SHOULD).size()) {
-        BooleanQuery.Builder builder =
-            new BooleanQuery.Builder().setMinimumNumberShouldMatch(minimumNumberShouldMatch);
-        for (Map.Entry<Query, Double> entry : shouldClauses.entrySet()) {
-          Query query = entry.getKey();
-          float boost = entry.getValue().floatValue();
-          if (boost != 1f) {
-            query = new BoostQuery(query, boost);
-          }
-          builder.add(query, Occur.SHOULD);
-        }
-        for (BooleanClause clause : clauses) {
-          if (clause.occur() != Occur.SHOULD) {
-            builder.add(clause);
-          }
-        }
-        return builder.build();
-      }
+    {
+      BooleanQuery deduped = deduplicateClauses(Occur.SHOULD);
+      if (deduped != null) return deduped;
     }
 
     // Deduplicate MUST clauses by summing up their boosts
-    if (clauseSets.get(Occur.MUST).size() > 0) {
-      Map<Query, Double> mustClauses = new HashMap<>();
-      for (Query query : clauseSets.get(Occur.MUST)) {
-        double boost = 1;
-        while (query instanceof BoostQuery) {
-          BoostQuery bq = (BoostQuery) query;
-          boost *= bq.getBoost();
-          query = bq.getQuery();
-        }
-        mustClauses.put(query, mustClauses.getOrDefault(query, 0d) + boost);
-      }
-      if (mustClauses.size() != clauseSets.get(Occur.MUST).size()) {
-        BooleanQuery.Builder builder =
-            new BooleanQuery.Builder().setMinimumNumberShouldMatch(minimumNumberShouldMatch);
-        for (Map.Entry<Query, Double> entry : mustClauses.entrySet()) {
-          Query query = entry.getKey();
-          float boost = entry.getValue().floatValue();
-          if (boost != 1f) {
-            query = new BoostQuery(query, boost);
-          }
-          builder.add(query, Occur.MUST);
-        }
-        for (BooleanClause clause : clauses) {
-          if (clause.occur() != Occur.MUST) {
-            builder.add(clause);
-          }
-        }
-        return builder.build();
-      }
+    {
+      BooleanQuery deduped = deduplicateClauses(Occur.MUST);
+      if (deduped != null) return deduped;
     }
 
     // Rewrite queries whose single scoring clause is a MUST clause on a
@@ -644,6 +592,36 @@ public class BooleanQuery extends Query implements Iterable<BooleanClause> {
     }
 
     return super.rewrite(indexSearcher);
+  }
+
+  private BooleanQuery deduplicateClauses(Occur occur) {
+    Collection<Query> clauseSet = clauseSets.get(occur);
+    if (clauseSet.isEmpty()) return null;
+    if (occur == Occur.SHOULD && minimumNumberShouldMatch > 1) return null;
+
+    Map<Query, Double> deduped = HashMap.newHashMap(clauseSet.size());
+    for (Query query : clauseSet) {
+      double boost = 1;
+      while (query instanceof BoostQuery bq) {
+        boost *= bq.getBoost();
+        query = bq.getQuery();
+      }
+      deduped.merge(query, boost, Double::sum);
+    }
+    if (deduped.size() == clauseSet.size()) return null;
+
+    BooleanQuery.Builder builder =
+        new BooleanQuery.Builder().setMinimumNumberShouldMatch(minimumNumberShouldMatch);
+    for (Map.Entry<Query, Double> entry : deduped.entrySet()) {
+      Query query = entry.getKey();
+      float boost = entry.getValue().floatValue();
+      if (boost != 1f) query = new BoostQuery(query, boost);
+      builder.add(query, occur);
+    }
+    for (BooleanClause clause : clauses) {
+      if (clause.occur() != occur) builder.add(clause);
+    }
+    return builder.build();
   }
 
   @Override
