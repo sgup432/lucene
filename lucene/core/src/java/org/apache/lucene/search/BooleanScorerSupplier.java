@@ -321,7 +321,13 @@ final class BooleanScorerSupplier extends ScorerSupplier {
     long cost = cost();
     List<Scorer> optionalScorers = new ArrayList<>();
     for (ScorerSupplier ss : subs.get(Occur.SHOULD)) {
-      optionalScorers.add(ss.get(cost));
+      // Skip clauses with no matching docs in this segment
+      if (ss.cost() > 0) {
+        optionalScorers.add(ss.get(cost));
+      }
+    }
+    if (optionalScorers.isEmpty()) {
+      return null;
     }
     List<Scorer> filters = new ArrayList<>();
     for (ScorerSupplier ss : subs.get(Occur.FILTER)) {
@@ -336,10 +342,12 @@ final class BooleanScorerSupplier extends ScorerSupplier {
       }
       return new MaxScoreBulkScorer(maxDoc, optionalScorers, filterScorer);
     } else {
-      // In the beginning of this method, we exited early if the score mode is not either TOP_SCORES
-      // or a score mode that doesn't need scores.
       assert scoreMode.needsScores() == false;
-      filters.add(new DisjunctionSumScorer(optionalScorers, scoreMode, cost));
+      if (optionalScorers.size() == 1) {
+        filters.add(optionalScorers.get(0));
+      } else {
+        filters.add(new DisjunctionSumScorer(optionalScorers, scoreMode, cost));
+      }
 
       if (maxDoc >= DenseConjunctionBulkScorer.WINDOW_SIZE
           && cost >= maxDoc / DenseConjunctionBulkScorer.DENSITY_THRESHOLD_INVERSE) {
@@ -539,8 +547,25 @@ final class BooleanScorerSupplier extends ScorerSupplier {
       return optional.iterator().next().get(leadCost);
     } else {
       final List<Scorer> optionalScorers = new ArrayList<>();
-      for (ScorerSupplier scorer : optional) {
-        optionalScorers.add(scorer.get(leadCost));
+      if (minShouldMatch <= 1) {
+        // When only one clause needs to match, skip clauses with zero cost
+        // (no matching docs in this segment). cost() is already cached from
+        // computeShouldCost(), so this check is essentially free.
+        for (ScorerSupplier scorer : optional) {
+          if (scorer.cost() > 0) {
+            optionalScorers.add(scorer.get(leadCost));
+          }
+        }
+        if (optionalScorers.isEmpty()) {
+          return new ConstantScoreScorer(0f, scoreMode, DocIdSetIterator.empty());
+        }
+        if (optionalScorers.size() == 1) {
+          return optionalScorers.get(0);
+        }
+      } else {
+        for (ScorerSupplier scorer : optional) {
+          optionalScorers.add(scorer.get(leadCost));
+        }
       }
 
       // Technically speaking, WANDScorer should be able to handle the following 3 conditions now
