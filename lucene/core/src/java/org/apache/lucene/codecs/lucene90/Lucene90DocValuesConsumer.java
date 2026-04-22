@@ -63,7 +63,7 @@ import org.apache.lucene.util.packed.DirectWriter;
 /** writer for {@link Lucene90DocValuesFormat} */
 final class Lucene90DocValuesConsumer extends DocValuesConsumer {
 
-  IndexOutput data, meta;
+  IndexOutput data, meta, skipIndex;
   final int maxDoc;
   private byte[] termsDictBuffer;
   private final int skipIndexIntervalSize;
@@ -75,7 +75,9 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
       String dataCodec,
       String dataExtension,
       String metaCodec,
-      String metaExtension)
+      String metaExtension,
+      String skipIndexCodec,
+      String skipIndexExtension)
       throws IOException {
     this.termsDictBuffer = new byte[1 << 14];
     boolean success = false;
@@ -100,6 +102,16 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
           Lucene90DocValuesFormat.VERSION_CURRENT,
           state.segmentInfo.getId(),
           state.segmentSuffix);
+      String skipIndexName =
+          IndexFileNames.segmentFileName(
+              state.segmentInfo.name, state.segmentSuffix, skipIndexExtension);
+      skipIndex = state.directory.createOutput(skipIndexName, state.context);
+      CodecUtil.writeIndexHeader(
+          skipIndex,
+          skipIndexCodec,
+          Lucene90DocValuesFormat.VERSION_CURRENT,
+          state.segmentInfo.getId(),
+          state.segmentSuffix);
       maxDoc = state.segmentInfo.maxDoc();
       this.skipIndexIntervalSize = skipIndexIntervalSize;
       success = true;
@@ -121,14 +133,17 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
       if (data != null) {
         CodecUtil.writeFooter(data); // write checksum
       }
+      if (skipIndex != null) {
+        CodecUtil.writeFooter(skipIndex);
+      }
       success = true;
     } finally {
       if (success) {
-        IOUtils.close(data, meta);
+        IOUtils.close(data, meta, skipIndex);
       } else {
-        IOUtils.closeWhileHandlingException(data, meta);
+        IOUtils.closeWhileHandlingException(data, meta, skipIndex);
       }
-      meta = data = null;
+      meta = data = skipIndex = null;
     }
   }
 
@@ -250,7 +265,7 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
   private void writeSkipIndex(FieldInfo field, DocValuesProducer valuesProducer)
       throws IOException {
     assert field.docValuesSkipIndexType() != DocValuesSkipIndexType.NONE;
-    final long start = data.getFilePointer();
+    final long start = skipIndex.getFilePointer();
     final SortedNumericDocValues values = valuesProducer.getSortedNumeric(field);
     long globalMaxValue = Long.MIN_VALUE;
     long globalMinValue = Long.MAX_VALUE;
@@ -292,7 +307,7 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
       writeLevels(accumulators);
     }
     meta.writeLong(start); // record the start in meta
-    meta.writeLong(data.getFilePointer() - start); // record the length
+    meta.writeLong(skipIndex.getFilePointer() - start); // record the length
     assert globalDocCount == 0 || globalMaxValue >= globalMinValue;
     meta.writeLong(globalMaxValue);
     meta.writeLong(globalMinValue);
@@ -312,17 +327,17 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
       // compute how many levels we need to write for the current accumulator
       final int levels = getLevels(index, totalAccumulators);
       // write the number of levels
-      data.writeByte((byte) levels);
+      skipIndex.writeByte((byte) levels);
       // write intervals in reverse order. This is done so we don't
       // need to read all of them in case of slipping
       for (int level = levels - 1; level >= 0; level--) {
         final SkipAccumulator accumulator =
             accumulatorsLevels.get(level).get(index >> (SKIP_INDEX_LEVEL_SHIFT * level));
-        data.writeInt(accumulator.maxDocID);
-        data.writeInt(accumulator.minDocID);
-        data.writeLong(accumulator.maxValue);
-        data.writeLong(accumulator.minValue);
-        data.writeInt(accumulator.docCount);
+        skipIndex.writeInt(accumulator.maxDocID);
+        skipIndex.writeInt(accumulator.minDocID);
+        skipIndex.writeLong(accumulator.maxValue);
+        skipIndex.writeLong(accumulator.minValue);
+        skipIndex.writeInt(accumulator.docCount);
       }
     }
   }
