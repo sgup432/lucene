@@ -270,6 +270,18 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
     final List<SkipAccumulator> accumulators = new ArrayList<>();
     SkipAccumulator accumulator = null;
     final int maxAccumulators = 1 << (SKIP_INDEX_LEVEL_SHIFT * (SKIP_INDEX_MAX_LEVEL - 1));
+
+    // Collect (value, docID) pairs per skip-tree block for the value-sorted index.
+    // These lists grow in sync with accumulators — one entry per skip block.
+    final List<long[]> vsiBlockValues = new ArrayList<>();
+    final List<int[]> vsiBlockDocIDs = new ArrayList<>();
+    final List<Integer> vsiBlockCounts = new ArrayList<>();
+    final List<Integer> vsiBlockMinDocIDs = new ArrayList<>();
+    // Current block's pairs
+    long[] curValues = new long[skipIndexIntervalSize + 64];
+    int[] curDocIDs = new int[skipIndexIntervalSize + 64];
+    int curCount = 0;
+
     for (int doc = values.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = values.nextDoc()) {
       final long firstValue = values.nextValue();
       if (accumulator != null
@@ -278,6 +290,12 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
         globalMinValue = Math.min(globalMinValue, accumulator.minValue);
         globalDocCount += accumulator.docCount;
         maxDocId = accumulator.maxDocID;
+        // Flush current block's VSI data
+        vsiBlockValues.add(Arrays.copyOf(curValues, curCount));
+        vsiBlockDocIDs.add(Arrays.copyOf(curDocIDs, curCount));
+        vsiBlockCounts.add(curCount);
+        vsiBlockMinDocIDs.add(accumulator.minDocID);
+        curCount = 0;
         accumulator = null;
         if (accumulators.size() == maxAccumulators) {
           writeLevels(accumulators);
@@ -290,6 +308,14 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
       }
       accumulator.nextDoc(doc);
       accumulator.accumulate(firstValue);
+      // Collect pair for VSI
+      if (curCount >= curValues.length) {
+        curValues = Arrays.copyOf(curValues, curCount * 2);
+        curDocIDs = Arrays.copyOf(curDocIDs, curCount * 2);
+      }
+      curValues[curCount] = firstValue;
+      curDocIDs[curCount] = doc;
+      curCount++;
       for (int i = 1, end = values.docValueCount(); i < end; ++i) {
         accumulator.accumulate(values.nextValue());
       }
@@ -301,15 +327,59 @@ final class Lucene90DocValuesConsumer extends DocValuesConsumer {
       globalDocCount += accumulator.docCount;
       maxDocId = accumulator.maxDocID;
       writeLevels(accumulators);
+      // Flush last block
+      vsiBlockValues.add(Arrays.copyOf(curValues, curCount));
+      vsiBlockDocIDs.add(Arrays.copyOf(curDocIDs, curCount));
+      vsiBlockCounts.add(curCount);
+      vsiBlockMinDocIDs.add(accumulator.minDocID);
     }
+
+    long skipTreeEnd = skipIndex.getFilePointer();
+
+    // Write value-sorted block index: fixed-width for random access binary search.
+    // Format: VInt numBlocks, then per-block VInt count, then contiguous block data
+    // (count longs sorted values + count ints docIDs per block).
+    long vsiStart = skipIndex.getFilePointer();
+    int numVsiBlocks = vsiBlockCounts.size();
+    skipIndex.writeVInt(numVsiBlocks);
+    skipIndex.writeVInt(0); // blockSize placeholder (not used — blocks are variable)
+
+    // Sort each block by value and write counts + minDocIDs
+    for (int b = 0; b < numVsiBlocks; b++) {
+      long[] vals = vsiBlockValues.get(b);
+      int[] docs = vsiBlockDocIDs.get(b);
+      int cnt = vsiBlockCounts.get(b);
+      ValueSortedBlockIndex.sortByValue(vals, docs, cnt);
+      vsiBlockValues.set(b, vals);
+      vsiBlockDocIDs.set(b, docs);
+      skipIndex.writeVInt(cnt);
+      skipIndex.writeVInt(vsiBlockMinDocIDs.get(b));
+    }
+
+    // Write block data: fixed-width longs + ints
+    for (int b = 0; b < numVsiBlocks; b++) {
+      long[] vals = vsiBlockValues.get(b);
+      int[] docs = vsiBlockDocIDs.get(b);
+      int cnt = vsiBlockCounts.get(b);
+      for (int i = 0; i < cnt; i++) {
+        skipIndex.writeLong(vals[i]);
+      }
+      for (int i = 0; i < cnt; i++) {
+        skipIndex.writeInt(docs[i]);
+      }
+    }
+
     meta.writeLong(start); // record the start in meta
-    meta.writeLong(skipIndex.getFilePointer() - start); // record the length
+    meta.writeLong(skipTreeEnd - start); // record the skip tree length
     assert globalDocCount == 0 || globalMaxValue >= globalMinValue;
     meta.writeLong(globalMaxValue);
     meta.writeLong(globalMinValue);
     assert globalDocCount <= maxDocId + 1;
     meta.writeInt(globalDocCount);
     meta.writeInt(maxDocId);
+    // Write VSI offset and length in meta
+    meta.writeLong(vsiStart);
+    meta.writeLong(skipIndex.getFilePointer() - vsiStart);
   }
 
   private void writeLevels(List<SkipAccumulator> accumulators) throws IOException {

@@ -23,6 +23,7 @@ import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesSkipper;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.search.ConstantScoreScorerSupplier;
@@ -157,6 +158,10 @@ final class SortedNumericDocValuesRangeQuery extends NumericDocValuesRangeQuery 
               new TwoPhaseIterator(skipApprox) {
                 private int cachedBlockEnd = -1;
                 private int cachedClassification = BLOCK_MAYBE;
+                // VSI-materialized bitset for MAYBE blocks
+                private FixedBitSet vsiBitSet = null;
+                private int vsiBlockStart = -1;
+                private int vsiBlockEnd = -1;
 
                 @Override
                 public boolean matches() throws IOException {
@@ -171,14 +176,37 @@ final class SortedNumericDocValuesRangeQuery extends NumericDocValuesRangeQuery 
                       return values.advanceExact(skipApprox.docID());
                     }
                   }
-                  // MAYBE — need to decode DV and check the actual value.
+                  // MAYBE — try VSI-based matching first (only for single-valued fields)
+                  int doc = skipApprox.docID();
+                  int blockStart = skipper.minDocID(0);
+                  int blockEnd = cachedBlockEnd + 1;
+                  if (singleton != null && vsiBitSet != null
+                      && doc >= vsiBlockStart && doc < vsiBlockEnd) {
+                    return vsiBitSet.get(doc - vsiBlockStart);
+                  }
+                  // Build VSI bitset for this block (single-valued only)
+                  int blockSize = blockEnd - blockStart;
+                  if (singleton != null && blockSize > 0 && blockSize <= 8192
+                      && blockStart >= 0) {
+                    FixedBitSet newBitSet = new FixedBitSet(blockSize);
+                    int matched = skipper.findMatchingDocs(
+                        lowerValue, upperValue, newBitSet, blockStart);
+                    if (matched >= 0) {
+                      vsiBitSet = newBitSet;
+                      vsiBlockStart = blockStart;
+                      vsiBlockEnd = blockEnd;
+                      return doc >= blockStart && doc < blockEnd
+                          && vsiBitSet.get(doc - blockStart);
+                    }
+                  }
+                  // Fallback: per-doc value check
                   if (singleton != null) {
-                    if (singleton.advanceExact(skipApprox.docID())) {
+                    if (singleton.advanceExact(doc)) {
                       final long value = singleton.longValue();
                       return value >= lowerValue && value <= upperValue;
                     }
                   } else {
-                    if (values.advanceExact(skipApprox.docID())) {
+                    if (values.advanceExact(doc)) {
                       for (int i = 0, cnt = values.docValueCount(); i < cnt; ++i) {
                         final long value = values.nextValue();
                         if (value < lowerValue) {

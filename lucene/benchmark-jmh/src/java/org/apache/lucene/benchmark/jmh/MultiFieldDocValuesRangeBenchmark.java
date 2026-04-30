@@ -76,6 +76,7 @@ public class MultiFieldDocValuesRangeBenchmark {
   private static final String MIXED = "mixed";
   private static final String SORTED = "sorted";
   private static final String RANDOM = "random";
+  private static final String SPARSE = "sparse";
 
   private Directory dir;
   private IndexReader reader;
@@ -90,7 +91,7 @@ public class MultiFieldDocValuesRangeBenchmark {
     @Param({"3", "5"})
     public int fieldCount;
 
-    @Param({CLUSTERED, MIXED, RANDOM, SORTED})
+    @Param({CLUSTERED, MIXED, RANDOM, SORTED, SPARSE})
     public String dataPattern;
   }
 
@@ -113,6 +114,10 @@ public class MultiFieldDocValuesRangeBenchmark {
     for (int i = 0; i < params.docCount; i++) {
       Document doc = new Document();
       for (int f = 0; f < params.fieldCount; f++) {
+        // For sparse pattern, only ~2% of docs have each field (ensures SPARSE IndexedDISI blocks)
+        if (params.dataPattern.equals(SPARSE) && ((i + f * 7) % 50) != 0) {
+          continue;
+        }
         long value = generateValue(params.dataPattern, f, i, params.docCount, r);
         doc.add(NumericDocValuesField.indexedField("field" + f, value));
       }
@@ -157,6 +162,9 @@ public class MultiFieldDocValuesRangeBenchmark {
         }
       case RANDOM:
         return r.nextLong(0, docCount);
+      case SPARSE:
+        // Random values, but only 10% of docs have each field
+        return r.nextLong(0, docCount);
       default:
         throw new IllegalArgumentException("Unknown pattern: " + pattern);
     }
@@ -194,6 +202,10 @@ public class MultiFieldDocValuesRangeBenchmark {
         long rangeSize4 = docCount / 5;
         long lower4 = (docCount - rangeSize4) / 2;
         return new long[] {lower4, lower4 + rangeSize4};
+      case SPARSE:
+        long rangeSize5 = docCount / 5;
+        long lower5 = (docCount - rangeSize5) / 2;
+        return new long[] {lower5, lower5 + rangeSize5};
       default:
         throw new IllegalArgumentException("Unknown pattern: " + pattern);
     }

@@ -100,6 +100,22 @@ public abstract class DocValuesSkipper {
   public abstract int docCount();
 
   /**
+   * Find doc IDs in the current level-0 block whose values fall within [lower, upper] and set them
+   * in the provided bitset. Returns the number of matching docs, or -1 if this operation is not
+   * supported (e.g., no value-sorted block index is available).
+   *
+   * @param lower the lower bound of the value range (inclusive)
+   * @param upper the upper bound of the value range (inclusive)
+   * @param bitSet the bitset to set matching doc IDs in
+   * @param offset the doc ID offset to subtract before setting bits
+   * @return number of matching docs, or -1 if not supported
+   */
+  public int findMatchingDocs(long lower, long upper,
+      org.apache.lucene.util.FixedBitSet bitSet, int offset) throws IOException {
+    return -1; // not supported by default
+  }
+
+  /**
    * Advance this skipper so that all levels intersects the range given by {@code minValue} and
    * {@code maxValue}. If there are no intersecting levels, the skipper is exhausted.
    */

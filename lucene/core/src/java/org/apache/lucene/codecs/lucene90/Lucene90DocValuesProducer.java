@@ -255,8 +255,12 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
     long minValue = meta.readLong();
     int docCount = meta.readInt();
     int maxDocID = meta.readInt();
+    // Value-sorted index offset and length (added for per-block value-sorted lookup)
+    long vsiOffset = meta.readLong();
+    long vsiLength = meta.readLong();
 
-    return new DocValuesSkipperEntry(offset, length, minValue, maxValue, docCount, maxDocID);
+    return new DocValuesSkipperEntry(
+        offset, length, minValue, maxValue, docCount, maxDocID, vsiOffset, vsiLength);
   }
 
   private void readNumeric(IndexInput meta, NumericEntry entry) throws IOException {
@@ -389,7 +393,14 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
   }
 
   private record DocValuesSkipperEntry(
-      long offset, long length, long minValue, long maxValue, int docCount, int maxDocId) {}
+      long offset,
+      long length,
+      long minValue,
+      long maxValue,
+      int docCount,
+      int maxDocId,
+      long vsiOffset,
+      long vsiLength) {}
 
   private static class NumericEntry {
     long[] table;
@@ -1905,6 +1916,15 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
 
     final IndexInput skipperSource = skipIndexData != null ? skipIndexData : data;
     final IndexInput input = skipperSource.slice("doc value skipper", entry.offset, entry.length);
+    // Create VSI reader if available
+    final ValueSortedBlockIndex.Reader vsiReader;
+    if (entry.vsiLength > 0) {
+      IndexInput vsiInput =
+          skipperSource.slice("value sorted index", entry.vsiOffset, entry.vsiLength);
+      vsiReader = new ValueSortedBlockIndex.Reader(vsiInput);
+    } else {
+      vsiReader = null;
+    }
     // TODO: should we write to disk the actual max level for this segment?
     return new DocValuesSkipper() {
       final int[] minDocID = new int[SKIP_INDEX_MAX_LEVEL];
@@ -1920,6 +1940,7 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
       final long[] maxValue = new long[SKIP_INDEX_MAX_LEVEL];
       final int[] docCount = new int[SKIP_INDEX_MAX_LEVEL];
       int levels = 1;
+      int vsiBlockIdx = -1; // tracks which VSI block we're on
 
       @Override
       public void advance(int target) throws IOException {
@@ -1936,6 +1957,7 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
             levels = input.readByte();
             assert levels <= SKIP_INDEX_MAX_LEVEL && levels > 0
                 : "level out of range [" + levels + "]";
+            vsiBlockIdx++;
             boolean valid = true;
             // check if current interval is competitive or we can jump to the next position
             for (int level = levels - 1; level >= 0; level--) {
@@ -2003,6 +2025,16 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
       @Override
       public int docCount() {
         return entry.docCount;
+      }
+
+      @Override
+      public int findMatchingDocs(
+          long lower, long upper, org.apache.lucene.util.FixedBitSet bitSet, int offset)
+          throws IOException {
+        if (vsiReader == null || minDocID[0] < 0) return -1;
+        int blockIdx = vsiReader.findBlockByDocID(minDocID[0]);
+        if (blockIdx < 0) return -1;
+        return vsiReader.findDocsInRange(blockIdx, lower, upper, bitSet, offset);
       }
     };
   }
