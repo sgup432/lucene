@@ -378,6 +378,8 @@ Optimizations
   and the field is dense and is the primary sort of the index to reduce the number of doc values visited. (Ignacio Vera)
 
 
+* GITHUB#16072: Added efficient implementations for BitSetIterator#docIDRunEnd. (Ignacio Vera)
+
 Bug Fixes
 ---------------------
 * GITHUB#15754: Fix HTMLStripCharFilter to prevent tags from incorrectly consuming subsequent
