@@ -108,7 +108,7 @@ abstract class SortedSkipperScorerSupplier extends ConstantScoreScorerSupplier {
         throw new UncheckedIOException(e);
       }
     }
-    if (skipperMinDocIdExact && skipperMaxDocIdExact) {
+    if (skipperMaxDocIdExact) {
       return skipperMaxDocId - skipperMinDocId;
     }
     return skipperMaxDocId - skipperMinDocId + skipper.docCount(0);
