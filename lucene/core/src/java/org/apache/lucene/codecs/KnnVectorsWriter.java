@@ -38,6 +38,7 @@ import org.apache.lucene.internal.hppc.IntIntHashMap;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.VectorScorer;
 import org.apache.lucene.util.Accountable;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.IOFunction;
 
 /** Writes vectors to an index. */
@@ -143,6 +144,10 @@ public abstract class KnnVectorsWriter implements Accountable, Closeable {
       return iterator.nextDoc();
     }
 
+    public void intoBitSet(int upTo, FixedBitSet bitSet, int offset) throws IOException {
+      iterator.intoBitSet(upTo, bitSet, offset);
+    }
+
     public int index() {
       return iterator.index();
     }
@@ -168,6 +173,10 @@ public abstract class KnnVectorsWriter implements Accountable, Closeable {
     @Override
     public int nextDoc() throws IOException {
       return iterator.nextDoc();
+    }
+
+    public void intoBitSet(int upTo, FixedBitSet bitSet, int offset) throws IOException {
+      iterator.intoBitSet(upTo, bitSet, offset);
     }
 
     int index() {
