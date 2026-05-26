@@ -141,15 +141,9 @@ abstract class SortedSkipperScorerSupplier extends ConstantScoreScorerSupplier {
         skipperMaxDocId = skipper.docCount();
         skipperMaxDocIdExact = true;
       } else {
-        skipper.advance(Long.MIN_VALUE, minOrd);
-        if (skipper.minValue(0) == minOrd) {
-          skipperMaxDocId = skipper.maxDocID(0) + 1;
-          skipper.advance(skipperMaxDocId);
-          skipperMaxDocIdExact = skipper.maxValue(0) != minOrd;
-        } else {
-          skipperMaxDocId = skipper.minDocID(0);
-          skipperMaxDocIdExact = false;
-        }
+        skipper.advance(Long.MIN_VALUE, minOrd - 1);
+        skipperMaxDocId = skipper.minDocID(0);
+        skipperMaxDocIdExact = skipper.maxValue(0) < minOrd;
       }
     } else {
       if (skipper.minValue() >= minOrd) {
@@ -164,15 +158,9 @@ abstract class SortedSkipperScorerSupplier extends ConstantScoreScorerSupplier {
         skipperMaxDocId = skipper.docCount();
         skipperMaxDocIdExact = true;
       } else {
-        skipper.advance(maxOrd, Long.MAX_VALUE);
-        if (skipper.maxValue(0) == maxOrd) {
-          skipperMaxDocId = skipper.maxDocID(0) + 1;
-          skipper.advance(skipperMaxDocId);
-          skipperMaxDocIdExact = skipper.minValue(0) != maxOrd;
-        } else {
-          skipperMaxDocId = skipper.minDocID(0);
-          skipperMaxDocIdExact = false;
-        }
+        skipper.advance(maxOrd + 1, Long.MAX_VALUE);
+        skipperMaxDocId = skipper.minDocID(0);
+        skipperMaxDocIdExact = skipper.minValue(0) > maxOrd;
       }
     }
   }
