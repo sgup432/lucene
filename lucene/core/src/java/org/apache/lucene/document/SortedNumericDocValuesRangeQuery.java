@@ -141,7 +141,7 @@ final class SortedNumericDocValuesRangeQuery extends NumericDocValuesRangeQuery 
         if (singleton != null) {
           if (skipper != null) {
             if ((primarySortField = densePrimarySort(context.reader(), skipper)) != null) {
-              return getScorerSupplierFromDensePrimarySort(singleton, skipper, primarySortField);
+              return getScorerSupplierFromDensePrimarySort(singleton, skipper, primarySortField, maxDoc);
             }
             // Use batch iterator for bulk block evaluation via intoBitSet()
             return ConstantScoreScorerSupplier.fromIterator(
@@ -196,8 +196,8 @@ final class SortedNumericDocValuesRangeQuery extends NumericDocValuesRangeQuery 
       }
 
       private ScorerSupplier getScorerSupplierFromDensePrimarySort(
-          NumericDocValues singleton, DocValuesSkipper skipper, SortField sortField) {
-        return new SortedSkipperScorerSupplier(skipper, sortField, score(), scoreMode) {
+          NumericDocValues singleton, DocValuesSkipper skipper, SortField sortField, int maxDoc) {
+        return new SortedSkipperScorerSupplier(skipper, sortField, score(), scoreMode, maxDoc) {
 
           @Override
           protected long getLowerValue() {
