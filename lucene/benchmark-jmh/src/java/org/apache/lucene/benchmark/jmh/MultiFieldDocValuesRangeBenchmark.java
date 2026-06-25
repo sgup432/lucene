@@ -86,6 +86,9 @@ public class MultiFieldDocValuesRangeBenchmark {
   // field0 matches ~all docs (a dense clause), every other field matches ~0.1% (very sparse), so a
   // tiny surviving set must be confirmed against a dense clause (stresses survivor pruning).
   private static final String DENSE_SPARSE = "dense_sparse";
+  // Dense field with GCD > 1 and min > 0 — exercises the bound-transformation SIMD path
+  // for rangeIntoBitSet on GCD/delta encoded fields. Values are multiples of 25 starting at 10000.
+  private static final String GCD_DELTA = "gcd_delta";
 
   private Directory dir;
   private IndexReader reader;
@@ -102,7 +105,7 @@ public class MultiFieldDocValuesRangeBenchmark {
     @Param({"1", "3", "5"})
     public int fieldCount;
 
-    @Param({CLUSTERED, MIXED, RANDOM, SORTED, DENSE, DENSE_SPARSE})
+    @Param({CLUSTERED, MIXED, RANDOM, SORTED, DENSE, DENSE_SPARSE, GCD_DELTA})
     public String dataPattern;
   }
 
@@ -195,6 +198,13 @@ public class MultiFieldDocValuesRangeBenchmark {
       case DENSE:
       case DENSE_SPARSE:
         return r.nextLong(0, docCount);
+      case GCD_DELTA:
+        // Values are multiples of 25 starting at 10000, random within range.
+        // This forces gcd=25, min=10000 encoding in the doc values writer.
+        long gcd = 25;
+        long base = 10000;
+        long maxSteps = docCount / 10; // range of possible values
+        return base + r.nextLong(0, maxSteps) * gcd;
       default:
         throw new IllegalArgumentException("Unknown pattern: " + pattern);
     }
@@ -244,6 +254,14 @@ public class MultiFieldDocValuesRangeBenchmark {
         long rangeSize5 = Math.max(1, docCount / 1000);
         long lower5 = (docCount - rangeSize5) / 2;
         return new long[] {lower5, lower5 + rangeSize5};
+      case GCD_DELTA:
+        // Query matches middle ~30% of the value range.
+        // Values are in [10000, 10000 + (docCount/10)*25].
+        long gcdBase = 10000;
+        long gcdRange = ((long) docCount / 10) * 25;
+        long gcdLo = gcdBase + (long) (gcdRange * 0.35);
+        long gcdHi = gcdBase + (long) (gcdRange * 0.65);
+        return new long[] {gcdLo, gcdHi};
       default:
         throw new IllegalArgumentException("Unknown pattern: " + pattern);
     }

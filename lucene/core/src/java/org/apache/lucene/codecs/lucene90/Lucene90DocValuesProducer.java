@@ -959,13 +959,35 @@ final class Lucene90DocValuesProducer extends DocValuesProducer {
                   long maxValue,
                   FixedBitSet bitSet,
                   int offset) {
-                // Per-doc evaluation for gcd/delta encoded fields
-                for (int d = fromDoc; d < toDoc; d++) {
-                  long v = mul * values.get(d) + delta;
-                  if (v >= minValue && v <= maxValue) {
-                    bitSet.set(d - offset);
+                // Convert query min and max into encoded space to enable SIMD comparison.
+                // Given: actual = mul * encoded + delta
+                // Query: actual in [minValue, maxValue]
+                // Equivalent: encoded in [ceil((minValue - delta) / mul),
+                //                         floor((maxValue - delta) / mul)]
+                long encodedMin;
+                long encodedMax;
+                try {
+                  long adjustedMin = Math.subtractExact(minValue, delta);
+                  long adjustedMax = Math.subtractExact(maxValue, delta);
+                  encodedMin = Math.ceilDiv(adjustedMin, mul);
+                  encodedMax = Math.floorDiv(adjustedMax, mul);
+                } catch (ArithmeticException overflow) {
+                  // If there is an overflow then fall back to per-value reconstruction
+                  for (int d = fromDoc; d < toDoc; d++) {
+                    long v = mul * values.get(d) + delta;
+                    if (v >= minValue && v <= maxValue) {
+                      bitSet.set(d - offset);
+                    }
                   }
+                  return;
                 }
+                if (encodedMin > encodedMax) {
+                  return; // no encoded value can satisfy the range
+                }
+                // It is guaranteed for encoded value to be atleast 0
+                encodedMin = Math.max(0, encodedMin);
+                Lucene90DocValuesProducer.rangeIntoBitSet(
+                    values, fromDoc, toDoc, encodedMin, encodedMax, bitSet, offset);
               }
             };
           }
