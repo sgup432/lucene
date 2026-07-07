@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.util.Objects;
 import java.util.function.LongPredicate;
 import org.apache.lucene.index.DocValues;
+import org.apache.lucene.index.DocValuesField;
 import org.apache.lucene.index.DocValuesSkipper;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
@@ -178,14 +179,14 @@ final class SortedNumericDocValuesRangeQuery extends NumericDocValuesRangeQuery 
        * -1 if # docs cannot be determined efficiently
        */
       private int docCountIgnoringDeletes(LeafReaderContext context) throws IOException {
-        final DocValuesSkipper skipper = context.reader().getDocValuesSkipper(field);
-        if (skipper != null) {
-          if (skipper.minValue() > upperValue || skipper.maxValue() < lowerValue) {
+        final DocValuesField dvField = context.reader().getDocValuesField(field);
+        if (dvField != null) {
+          if (dvField.minValue() > upperValue || dvField.maxValue() < lowerValue) {
             return 0;
           }
-          if (skipper.docCount() == context.reader().maxDoc()
-              && skipper.minValue() >= lowerValue
-              && skipper.maxValue() <= upperValue) {
+          if (dvField.docCount() == context.reader().maxDoc()
+              && dvField.minValue() >= lowerValue
+              && dvField.maxValue() <= upperValue) {
             return context.reader().maxDoc();
           }
         }

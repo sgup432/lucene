@@ -17,7 +17,7 @@
 package org.apache.lucene.search;
 
 import java.io.IOException;
-import org.apache.lucene.index.DocValuesSkipper;
+import org.apache.lucene.index.DocValuesField;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
@@ -26,7 +26,7 @@ import org.apache.lucene.index.PointValues;
 /**
  * Utility class for retrieving global numeric field statistics from index metadata structures,
  * without accessing individual documents. It probes {@link PointValues} first and falls back to
- * {@link DocValuesSkipper}. Returns {@code null} when neither structure is available for the field.
+ * {@link DocValuesField}. Returns {@code null} when neither structure is available for the field.
  *
  * @lucene.experimental
  */
@@ -45,12 +45,12 @@ public final class NumericFieldStats {
 
   /**
    * Returns the global statistics for the given numeric field across all segments. Probes {@link
-   * PointValues} first; if unavailable, falls back to {@link DocValuesSkipper}.
+   * PointValues} first; if unavailable, falls back to {@link DocValuesField}.
    *
    * @param reader the {@link IndexReader} to query
    * @param field the name of the numeric field
    * @return a {@link Stats} containing the global min, max, and doc count, or {@code null} if
-   *     neither {@link PointValues} nor {@link DocValuesSkipper} are available for the field
+   *     neither {@link PointValues} nor {@link DocValuesField} are available for the field
    * @throws IOException if an I/O error occurs
    */
   public static Stats getStats(IndexReader reader, String field) throws IOException {
@@ -83,18 +83,18 @@ public final class NumericFieldStats {
       if (leafReader.getFieldInfos().fieldInfo(field) == null) {
         continue;
       }
-      final DocValuesSkipper skipper = leafReader.getDocValuesSkipper(field);
-      if (skipper == null) {
+      final DocValuesField dvField = leafReader.getDocValuesField(field);
+      if (dvField == null) {
         return null;
       }
       if (min == null && max == null) {
-        min = skipper.minValue();
-        max = skipper.maxValue();
+        min = dvField.minValue();
+        max = dvField.maxValue();
       } else {
-        min = Math.min(min, skipper.minValue());
-        max = Math.max(max, skipper.maxValue());
+        min = Math.min(min, dvField.minValue());
+        max = Math.max(max, dvField.maxValue());
       }
-      docCount += skipper.docCount();
+      docCount += dvField.docCount();
     }
     if (min == null || max == null) {
       return null;
